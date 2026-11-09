@@ -12,7 +12,116 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app">
+  <!-- Tela de Login / Cadastro -->
+  <section class="auth-gate" id="auth-gate" aria-label="Acesso à conta">
+    <div class="auth-card">
+      <div class="auth-head">
+        <div class="brand"><span class="brand-mark"></span>Pulso</div>
+        <span class="cloud-badge" id="cloud-status-badge" title="Status de sincronização">Modo local</span>
+      </div>
+
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="auth-tab active" id="tab-login" data-action="switch-auth-tab" data-id="login">Entrar</button>
+        <button type="button" class="auth-tab" id="tab-register" data-action="switch-auth-tab" data-id="register">Criar conta</button>
+      </div>
+
+      <!-- Formulário de Login -->
+      <form class="form" id="login-form" data-form="login">
+        <label class="field">
+          <span>Seu Gmail</span>
+          <input name="email" id="login-email" type="email" required placeholder="seuemail@gmail.com" autocomplete="email" />
+        </label>
+        <label class="field">
+          <span>Senha</span>
+          <input name="senha" id="login-senha" type="password" required minlength="6" placeholder="Sua senha" autocomplete="current-password" />
+        </label>
+        <p class="auth-error" id="login-error" role="alert"></p>
+        <button type="submit" class="btn primary" id="login-submit">Entrar na conta</button>
+      </form>
+
+      <!-- Formulário de Cadastro -->
+      <form class="form" id="register-form" data-form="register" style="display:none">
+        <label class="field">
+          <span>Nome completo *</span>
+          <input name="nome" id="reg-nome" type="text" required placeholder="Ex.: Anthony Silva" autocomplete="name" />
+        </label>
+        <div class="row">
+          <label class="field">
+            <span>Seu Gmail *</span>
+            <input name="email" id="reg-email" type="email" required placeholder="seuemail@gmail.com" autocomplete="email" />
+          </label>
+          <label class="field">
+            <span>Crie uma senha * (mín. 6)</span>
+            <input name="senha" id="reg-senha" type="password" required minlength="6" placeholder="Mínimo 6 caracteres" autocomplete="new-password" />
+          </label>
+        </div>
+
+        <div class="field">
+          <span>Data de nascimento * <small class="age-preview" id="reg-age-preview"></small></span>
+          <div class="dob-row">
+            <input name="dia" id="reg-dia" type="number" min="1" max="31" required placeholder="Dia (DD)" aria-label="Dia de nascimento" />
+            <select name="mes" id="reg-mes" required aria-label="Mês de nascimento">
+              <option value="">Mês</option>
+              <option value="1">01 · Janeiro</option>
+              <option value="2">02 · Fevereiro</option>
+              <option value="3">03 · Março</option>
+              <option value="4">04 · Abril</option>
+              <option value="5">05 · Maio</option>
+              <option value="6">06 · Junho</option>
+              <option value="7">07 · Julho</option>
+              <option value="8">08 · Agosto</option>
+              <option value="9">09 · Setembro</option>
+              <option value="10">10 · Outubro</option>
+              <option value="11">11 · Novembro</option>
+              <option value="12">12 · Dezembro</option>
+            </select>
+            <input name="ano" id="reg-ano" type="number" min="1920" max="2020" required placeholder="Ano (AAAA)" aria-label="Ano de nascimento" />
+          </div>
+        </div>
+
+        <div class="row">
+          <label class="field">
+            <span>Peso obrigatório (kg) *</span>
+            <input name="peso" id="reg-peso" type="number" step="0.1" min="25" max="300" required placeholder="Ex.: 75.5" />
+          </label>
+          <label class="field">
+            <span>Altura obrigatória (m) *</span>
+            <input name="altura_m" id="reg-altura" type="number" step="0.01" min="1.00" max="2.50" required placeholder="Ex.: 1.75" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="field">
+            <span>Sexo</span>
+            <select name="sexo" id="reg-sexo">
+              <option value="m">Masculino</option>
+              <option value="f">Feminino</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Objetivo inicial</span>
+            <select name="objetivo" id="reg-objetivo">
+              <option value="manter">Manter o peso</option>
+              <option value="perder">Perder peso</option>
+              <option value="ganhar">Ganhar massa</option>
+            </select>
+          </label>
+        </div>
+
+        <p class="auth-error" id="register-error" role="alert"></p>
+        <button type="submit" class="btn primary" id="register-submit">Criar conta e entrar</button>
+      </form>
+
+      <div class="auth-foot">
+        <button type="button" class="btn ghost small" id="open-cloud-config" data-action="open-cloud-dialog">
+          ☁️ Configurar Nuvem (Firebase) para usar em vários celulares
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Aplicativo Principal -->
+  <div class="app" id="app-shell" style="display:none">
     <nav class="nav" aria-label="Navegação principal">
       <div class="brand"><span class="brand-mark"></span>Pulso</div>
       <a href="#inicio" class="nav-link" id="nav-inicio" data-route="inicio">
@@ -30,6 +139,8 @@
       <a href="#medidas" class="nav-link" id="nav-medidas" data-route="medidas">
         <svg viewBox="0 0 24 24"><path d="M3 7h18v10H3zm3 0v4m3-4v2m3-2v4m3-4v2m3-2v4" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>Medidas</span>
       </a>
+
+      <div class="nav-user" id="nav-user"></div>
     </nav>
 
     <main class="main">
@@ -38,7 +149,10 @@
           <p class="eyebrow" id="today-label"></p>
           <h1 id="page-title">Metas do dia</h1>
         </div>
-        <div class="topbar-score" id="topbar-score"></div>
+        <div class="topbar-right">
+          <div class="user-pill" id="topbar-user"></div>
+          <div class="topbar-score" id="topbar-score"></div>
+        </div>
       </header>
 
       <section class="screen" id="screen-inicio" data-screen="inicio"></section>
@@ -49,6 +163,7 @@
     </main>
   </div>
 
+  <!-- Diálogo de Treino -->
   <dialog id="workout-dialog" class="dialog">
     <form id="workout-form" method="dialog" data-form="workout">
       <h2 id="workout-dialog-title">Novo treino</h2>
@@ -61,6 +176,30 @@
       <div class="dialog-actions">
         <button type="button" class="btn ghost" id="workout-cancel" data-action="close-dialog">Cancelar</button>
         <button type="submit" class="btn primary" id="workout-save">Salvar treino</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Diálogo de Configuração da Nuvem (Firebase) -->
+  <dialog id="cloud-dialog" class="dialog">
+    <form id="cloud-form" method="dialog" data-form="cloud">
+      <h2>☁️ Sincronização na Nuvem (Firebase)</h2>
+      <p class="sub" style="margin-bottom:12px">
+        Cole abaixo o bloco <code>firebaseConfig</code> do seu projeto gratuito no Firebase para sincronizar contas entre celulares diferentes.
+      </p>
+      <label class="field">
+        <span>Configuração do Firebase (JSON ou código copiado do Firebase)</span>
+        <textarea name="config" id="cloud-config-input" rows="7" placeholder='{
+  "apiKey": "AIza...",
+  "authDomain": "seu-app.firebaseapp.com",
+  "projectId": "seu-app"
+}'></textarea>
+      </label>
+      <p class="note" id="cloud-dialog-msg"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger small" data-action="clear-cloud-config">Desativar nuvem</button>
+        <button type="button" class="btn ghost" data-action="close-cloud-dialog">Fechar</button>
+        <button type="submit" class="btn primary" id="cloud-save">Salvar e conectar</button>
       </div>
     </form>
   </dialog>

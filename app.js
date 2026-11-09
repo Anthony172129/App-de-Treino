@@ -1,14 +1,39 @@
 'use strict';
 
 /* =========================================================
-   Pulso — app de treino
-   Dados salvos localmente (localStorage) no aparelho.
+   Pulso — app de treino com Contas (Gmail + senha) e Nuvem (Firebase)
    ========================================================= */
 
-const KEY = 'pulso-app-v1';
+const ACCOUNTS_KEY = 'pulso-accounts-v1';
+const SESSION_KEY = 'pulso-session-v1';
+const FB_CONFIG_KEY = 'pulso-firebase-config-v1';
+const LEGACY_KEY = 'pulso-app-v1';
+
+// Se quiser deixar a configuração do Firebase fixa no código para todos os celulares
+// não precisarem colar nada, basta preencher os campos abaixo:
+const DEFAULT_FIREBASE_CONFIG = null;
+/* Exemplo:
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: "SUA_API_KEY",
+  authDomain: "seu-projeto.firebaseapp.com",
+  projectId: "seu-projeto",
+};
+*/
 
 const DEFAULT_STATE = {
-  profile: { sexo: 'm', idade: 25, altura: 175, peso: 75, atividade: 1.55, objetivo: 'manter', configurado: false },
+  profile: {
+    nome: '',
+    email: '',
+    nascimento: { dia: 1, mes: 1, ano: 2000 },
+    sexo: 'm',
+    idade: 25,
+    altura: 175,     // guardada em cm internamente para a fórmula Mifflin-St Jeor
+    altura_m: 1.75,  // altura em metros exibida ao usuário
+    peso: 75,
+    atividade: 1.55,
+    objetivo: 'manter',
+    configurado: false,
+  },
   trainingDays: [1, 2, 3, 4, 5, 6], // 0 = domingo
   bestStreak: 0,
   workouts: [
@@ -59,21 +84,6 @@ const DAYS_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const TITLES = { inicio: 'Metas do dia', treinos: 'Meus treinos', calorias: 'Calorias', agua: 'Água', medidas: 'Medidas do corpo' };
 const POINTS = { treino: 40, agua: 30, alim: 30 };
 
-/* ---------- Estado ---------- */
-let S = load();
-
-function load() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(KEY));
-    if (saved) return { ...structuredClone(DEFAULT_STATE), ...saved, profile: { ...DEFAULT_STATE.profile, ...saved.profile } };
-  } catch (e) { /* dados corrompidos: recomeça */ }
-  return structuredClone(DEFAULT_STATE);
-}
-function save() {
-  S.bestStreak = Math.max(S.bestStreak || 0, streak());
-  localStorage.setItem(KEY, JSON.stringify(S));
-}
-
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -88,6 +98,178 @@ const clamp01 = n => Math.max(0, Math.min(1, n));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const timeNow = () => new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 const EMPTY_DAY = () => ({ water: [], meals: [], sessions: [] });
+
+/* ---------- Cálculo de Idade por Dia, Mês e Ano ---------- */
+function calcAgeFromDOB(dia, mes, ano) {
+  const d = Number(dia), m = Number(mes), y = Number(ano);
+  if (!d || !m || !y || y < 1900 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const check = new Date(y, m - 1, d);
+  if (check.getFullYear() !== y || check.getMonth() !== m - 1 || check.getDate() !== d) return null;
+  const now = new Date();
+  let age = now.getFullYear() - y;
+  const mDiff = (now.getMonth() + 1) - m;
+  if (mDiff < 0 || (mDiff === 0 && now.getDate() < d)) age--;
+  return age >= 5 && age <= 115 ? age : null;
+}
+
+function normalizeMeters(val) {
+  let num = Number(String(val).replace(',', '.'));
+  if (!num || isNaN(num)) return null;
+  // Se digitarem 175 por engano em vez de 1.75, converte para 1.75m
+  if (num >= 100 && num <= 250) num = +(num / 100).toFixed(2);
+  if (num < 1.0 || num > 2.5) return null;
+  return +num.toFixed(2);
+}
+
+const isGmail = email => /^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(String(email || '').trim());
+
+/* ---------- Estado e Contas ---------- */
+let currentUserEmail = null;
+let S = structuredClone(DEFAULT_STATE);
+let cloud = { enabled: false, auth: null, db: null, fbModules: null };
+
+function loadAccounts() {
+  try {
+    return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveAccounts(accs) {
+  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accs));
+}
+
+function userStorageKey(email) {
+  return `pulso-user-data-${email.toLowerCase().trim()}`;
+}
+
+function hydrateState(saved) {
+  const base = structuredClone(DEFAULT_STATE);
+  if (!saved) return base;
+  const merged = {
+    ...base,
+    ...saved,
+    profile: { ...base.profile, ...(saved.profile || {}) },
+  };
+  if (merged.profile.nascimento) {
+    const calc = calcAgeFromDOB(merged.profile.nascimento.dia, merged.profile.nascimento.mes, merged.profile.nascimento.ano);
+    if (calc != null) merged.profile.idade = calc;
+  }
+  if (!merged.profile.altura_m && merged.profile.altura) {
+    merged.profile.altura_m = +(merged.profile.altura / 100).toFixed(2);
+  }
+  return merged;
+}
+
+function loadUserState(email) {
+  try {
+    const raw = localStorage.getItem(userStorageKey(email));
+    if (raw) return hydrateState(JSON.parse(raw));
+  } catch (e) { /* ignora erro */ }
+  return structuredClone(DEFAULT_STATE);
+}
+
+function save() {
+  if (!currentUserEmail) return;
+  S.bestStreak = Math.max(S.bestStreak || 0, streak());
+  if (S.profile.nascimento) {
+    const calc = calcAgeFromDOB(S.profile.nascimento.dia, S.profile.nascimento.mes, S.profile.nascimento.ano);
+    if (calc != null) S.profile.idade = calc;
+  }
+  localStorage.setItem(userStorageKey(currentUserEmail), JSON.stringify(S));
+  syncToCloud();
+}
+
+/* ---------- Nuvem (Firebase Auth + Firestore) ---------- */
+function getFirebaseConfig() {
+  if (DEFAULT_FIREBASE_CONFIG && DEFAULT_FIREBASE_CONFIG.apiKey) return DEFAULT_FIREBASE_CONFIG;
+  try {
+    const saved = JSON.parse(localStorage.getItem(FB_CONFIG_KEY));
+    if (saved && saved.apiKey && saved.projectId) return saved;
+  } catch (e) { /* ignora */ }
+  return null;
+}
+
+function parseFirebaseConfigInput(rawText) {
+  const txt = String(rawText || '').trim();
+  if (!txt) return null;
+  try {
+    const parsed = JSON.parse(txt);
+    if (parsed.apiKey && parsed.projectId) return parsed;
+  } catch (e) { /* tenta extrair de código JS colado do console do Firebase */ }
+  const extract = key => {
+    const m = txt.match(new RegExp(`${key}\\s*:\\s*["']([^"']+)["']`));
+    return m ? m[1] : undefined;
+  };
+  const cfg = {
+    apiKey: extract('apiKey'),
+    authDomain: extract('authDomain'),
+    projectId: extract('projectId'),
+    storageBucket: extract('storageBucket'),
+    messagingSenderId: extract('messagingSenderId'),
+    appId: extract('appId'),
+  };
+  return cfg.apiKey && cfg.projectId ? cfg : null;
+}
+
+async function initCloud() {
+  const cfg = getFirebaseConfig();
+  const badge = $('#cloud-status-badge');
+  if (!cfg) {
+    cloud = { enabled: false, auth: null, db: null, fbModules: null };
+    if (badge) { badge.textContent = 'Modo local'; badge.classList.remove('online'); }
+    return false;
+  }
+  try {
+    const [appMod, authMod, fsMod] = await Promise.all([
+      import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
+      import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js'),
+      import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js'),
+    ]);
+    const app = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(cfg);
+    const auth = authMod.getAuth(app);
+    const db = fsMod.getFirestore(app);
+    cloud = { enabled: true, auth, db, fbModules: { authMod, fsMod } };
+    if (badge) { badge.textContent = '☁️ Nuvem ativa'; badge.classList.add('online'); }
+    return true;
+  } catch (err) {
+    console.warn('Falha ao iniciar Firebase, usando modo local:', err);
+    cloud = { enabled: false, auth: null, db: null, fbModules: null };
+    if (badge) { badge.textContent = 'Modo local'; badge.classList.remove('online'); }
+    return false;
+  }
+}
+
+async function syncToCloud() {
+  if (!cloud.enabled || !cloud.db || !currentUserEmail) return;
+  try {
+    const { doc, setDoc } = cloud.fbModules.fsMod;
+    const id = currentUserEmail.toLowerCase().trim();
+    await setDoc(doc(cloud.db, 'usuarios_pulso', id), {
+      email: id,
+      updatedAt: Date.now(),
+      state: JSON.parse(JSON.stringify(S)),
+    }, { merge: true });
+  } catch (e) {
+    console.warn('Não foi possível sincronizar na nuvem agora:', e);
+  }
+}
+
+async function pullFromCloud(email) {
+  if (!cloud.enabled || !cloud.db) return null;
+  try {
+    const { doc, getDoc } = cloud.fbModules.fsMod;
+    const snap = await getDoc(doc(cloud.db, 'usuarios_pulso', email.toLowerCase().trim()));
+    if (snap.exists() && snap.data()?.state) {
+      return hydrateState(snap.data().state);
+    }
+  } catch (e) {
+    console.warn('Erro ao buscar dados da nuvem:', e);
+  }
+  return null;
+}
+
 const peek = (k = dkey()) => S.log[k] || EMPTY_DAY();
 const today = () => (S.log[dkey()] ||= EMPTY_DAY());
 
@@ -113,7 +295,6 @@ function kcalGoal() {
   return Math.max(P().sexo === 'f' ? 1200 : 1500, tdee() + adj);
 }
 const proteinGoal = () => Math.round(P().peso * (P().objetivo === 'manter' ? 1.6 : 2));
-// 35 ml por kg de peso + 500 ml em dias com treino registrado
 const waterGoal = (k = dkey()) => Math.round((P().peso * 35) / 50) * 50 + (peek(k).sessions.length ? 500 : 0);
 const waterOf = k => sum(peek(k).water, x => x.ml);
 const kcalIn = k => sum(peek(k).meals, x => x.kcal);
@@ -124,8 +305,6 @@ const isTrainingDay = d => S.trainingDays.includes(d.getDay());
 const sessionKcal = (tipo, min) => Math.round(ACTIVITIES[tipo].met * P().peso * (min / 60));
 
 function streak() {
-  // Conta dias seguidos de treino. Dias de descanso (não marcados na semana) não quebram a sequência.
-  // Hoje ainda não conta como falta enquanto o dia não termina.
   let d = new Date(), n = 0;
   if (trained(dkey(d))) n++;
   d = addDays(d, -1);
@@ -182,7 +361,7 @@ const stat = (k, v, unit = '') => `<div class="stat"><div class="k">${k}</div><d
 const del = (action, id) => `<button class="icon-btn" data-action="${action}" data-id="${id}" aria-label="Remover">${ICON.trash}</button>`;
 const setupBanner = () => P().configurado ? '' : `
   <div class="card setup">
-    <div><h2>Configure seu perfil</h2><p class="sub" style="margin:0">Informe altura, peso, idade e sexo para calcular suas metas de calorias e água corretamente.</p></div>
+    <div><h2>Configure seu perfil</h2><p class="sub" style="margin:0">Informe altura, peso, data de nascimento e sexo para calcular suas metas.</p></div>
     <a class="btn body" href="#medidas" id="setup-go">Preencher medidas</a>
   </div>`;
 
@@ -243,9 +422,8 @@ function renderTreinos() {
   const k = dkey(), st = streak(), sessions = peek(k).sessions;
   const now = new Date();
 
-  // Calendário: últimas 5 semanas, começando no domingo
   const start = addDays(now, -now.getDay() - 28);
-  const firstUse = Object.keys(S.log).sort()[0] || k; // dias antes de começar a usar o app não contam como falta
+  const firstUse = Object.keys(S.log).sort()[0] || k;
   let heat = DAYS_SHORT.map(d => `<div class="heat-h">${d[0]}</div>`).join('');
   for (let i = 0; i < 35; i++) {
     const d = addDays(start, i), kk = dkey(d);
@@ -420,6 +598,8 @@ function renderMedidas() {
   const ms = [...S.measures].sort((a, b) => b.data.localeCompare(a.data));
   const last = ms[0] || {};
   const rcq = last.cintura && last.quadril ? (last.cintura / last.quadril).toFixed(2).replace('.', ',') : '—';
+  const dob = p.nascimento || { dia: 1, mes: 1, ano: 2000 };
+  const alturaM = (p.altura_m || +(p.altura / 100).toFixed(2)).toFixed(2);
 
   const fields = [['peso', 'Peso', 'kg'], ['cintura', 'Cintura', 'cm'], ['quadril', 'Quadril', 'cm'], ['peito', 'Peito', 'cm'], ['braco', 'Braço', 'cm'], ['coxa', 'Coxa', 'cm'], ['gordura', '% Gordura', '%']];
   const cell = (m, i, f) => {
@@ -433,7 +613,6 @@ function renderMedidas() {
     return `<td>${m[f]}${diff}</td>`;
   };
 
-  // gráfico de peso
   const pts = [...S.measures].filter(m => m.peso).sort((a, b) => a.data.localeCompare(b.data)).slice(-12);
   let spark = '<p class="empty">Registre o peso em pelo menos 2 datas para ver o gráfico de evolução.</p>';
   if (pts.length > 1) {
@@ -450,19 +629,29 @@ function renderMedidas() {
   return `
   <div class="grid-2">
     <div class="card">
-      <h2>Meu perfil</h2><p class="sub">Usado para calcular calorias, água e IMC.</p>
+      <h2>Meu perfil (${esc(p.nome || currentUserEmail)})</h2>
+      <p class="sub">Idade calculada automaticamente: <b>${p.idade} anos</b> · Conta: ${esc(currentUserEmail)}</p>
       <form class="form" data-form="profile" id="profile-form">
-        <div class="row">
-          <label class="field"><span>Sexo</span><select name="sexo" id="pf-sexo"><option value="m" ${p.sexo === 'm' ? 'selected' : ''}>Masculino</option><option value="f" ${p.sexo === 'f' ? 'selected' : ''}>Feminino</option></select></label>
-          <label class="field"><span>Idade</span><input name="idade" id="pf-idade" type="number" min="10" max="100" value="${p.idade}" required /></label>
+        <label class="field"><span>Nome completo</span><input name="nome" id="pf-nome" type="text" value="${esc(p.nome || '')}" required /></label>
+        <div class="field">
+          <span>Data de nascimento (Dia / Mês / Ano) — ${p.idade} anos</span>
+          <div class="dob-row">
+            <input name="dia" id="pf-dia" type="number" min="1" max="31" value="${dob.dia}" required aria-label="Dia" />
+            <select name="mes" id="pf-mes" required aria-label="Mês">
+              ${['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
+                .map((m, idx) => `<option value="${idx + 1}" ${+dob.mes === idx + 1 ? 'selected' : ''}>${pad(idx + 1)} · ${m}</option>`).join('')}
+            </select>
+            <input name="ano" id="pf-ano" type="number" min="1920" max="2020" value="${dob.ano}" required aria-label="Ano" />
+          </div>
         </div>
         <div class="row">
-          <label class="field"><span>Altura (cm)</span><input name="altura" id="pf-altura" type="number" min="100" max="250" value="${p.altura}" required /></label>
-          <label class="field"><span>Peso (kg)</span><input name="peso" id="pf-peso" type="number" min="30" max="300" step="0.1" value="${p.peso}" required /></label>
+          <label class="field"><span>Sexo</span><select name="sexo" id="pf-sexo"><option value="m" ${p.sexo === 'm' ? 'selected' : ''}>Masculino</option><option value="f" ${p.sexo === 'f' ? 'selected' : ''}>Feminino</option></select></label>
+          <label class="field"><span>Altura (m)</span><input name="altura_m" id="pf-altura" type="number" step="0.01" min="1.00" max="2.50" value="${alturaM}" required /></label>
+          <label class="field"><span>Peso (kg)</span><input name="peso" id="pf-peso" type="number" min="25" max="300" step="0.1" value="${p.peso}" required /></label>
         </div>
         <label class="field"><span>Nível de atividade</span><select name="atividade" id="pf-atividade">
           ${[[1.2, 'Sedentário (pouco ou nenhum exercício)'], [1.375, 'Leve (1–3 treinos por semana)'], [1.55, 'Moderado (3–5 treinos por semana)'], [1.725, 'Intenso (6–7 treinos por semana)'], [1.9, 'Atleta (treino 2× ao dia)']]
-            .map(([v, t]) => `<option value="${v}" ${+p.atividade === v ? 'selected' : ''}>${t}</option>`).join('')}
+            .map(([val, t]) => `<option value="${val}" ${+p.atividade === val ? 'selected' : ''}>${t}</option>`).join('')}
         </select></label>
         <label class="field"><span>Objetivo</span><select name="objetivo" id="pf-objetivo">
           <option value="perder" ${p.objetivo === 'perder' ? 'selected' : ''}>Perder peso</option>
@@ -483,7 +672,7 @@ function renderMedidas() {
         <div class="bmi-legend"><span>15</span><span>18,5</span><span>25</span><span>30</span><span>40</span></div>
       </div>
       <div class="card">
-        <h2>Suas metas</h2><p class="sub">Calculadas automaticamente</p>
+        <h2>Suas metas</h2><p class="sub">Calculadas automaticamente (${alturaM.replace('.', ',')} m · ${p.peso} kg · ${p.idade} anos)</p>
         <div class="grid-3" style="grid-template-columns:1fr 1fr">
           ${stat('Calorias/dia', fmt(kcalGoal()), 'kcal')}${stat('Água/dia', (waterGoal() / 1000).toFixed(2).replace('.', ','), 'L')}
           ${stat('Proteína/dia', proteinGoal(), 'g')}${stat('Cintura/quadril', rcq)}
@@ -515,17 +704,66 @@ function renderMedidas() {
   </div>`;
 }
 
+/* ---------- Autenticação (Login, Cadastro e Sessão) ---------- */
+function switchAuthTab(tab) {
+  const isLogin = tab === 'login';
+  $('#tab-login').classList.toggle('active', isLogin);
+  $('#tab-register').classList.toggle('active', !isLogin);
+  $('#login-form').style.display = isLogin ? 'grid' : 'none';
+  $('#register-form').style.display = isLogin ? 'none' : 'grid';
+  $('#login-error').textContent = '';
+  $('#register-error').textContent = '';
+}
+
+function enterAppWithUser(email, stateData) {
+  currentUserEmail = email.toLowerCase().trim();
+  localStorage.setItem(SESSION_KEY, currentUserEmail);
+  S = hydrateState(stateData || loadUserState(currentUserEmail));
+  localStorage.setItem(userStorageKey(currentUserEmail), JSON.stringify(S));
+
+  $('#auth-gate').style.display = 'none';
+  $('#app-shell').style.display = '';
+  render(true);
+}
+
+async function logoutUser() {
+  if (cloud.enabled && cloud.auth && cloud.fbModules) {
+    try { await cloud.fbModules.authMod.signOut(cloud.auth); } catch (e) { /* ignora */ }
+  }
+  currentUserEmail = null;
+  localStorage.removeItem(SESSION_KEY);
+  $('#app-shell').style.display = 'none';
+  $('#auth-gate').style.display = 'grid';
+  switchAuthTab('login');
+}
+
 /* ---------- Renderização e rotas ---------- */
 const RENDER = { inicio: renderInicio, treinos: renderTreinos, calorias: renderCalorias, agua: renderAgua, medidas: renderMedidas };
 let route = 'inicio';
 const openPlans = new Set();
 
 function render(animate = false) {
+  if (!currentUserEmail) {
+    $('#app-shell').style.display = 'none';
+    $('#auth-gate').style.display = 'grid';
+    return;
+  }
   const sc = score();
   const dt = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
   $('#today-label').textContent = dt.charAt(0).toUpperCase() + dt.slice(1);
   $('#page-title').textContent = TITLES[route];
   $('#topbar-score').innerHTML = `${ring(sc.total / 100, 34, 5, 'var(--lime)')}<b>${sc.total}</b><span>pts hoje</span>`;
+
+  const firstName = (S.profile.nome || currentUserEmail).split(' ')[0];
+  $('#topbar-user').innerHTML = `<b>${esc(firstName)}</b><button class="btn ghost small" data-action="logout" id="logout-btn" style="padding:4px 9px;font-size:.75rem">Sair</button>`;
+  $('#nav-user').innerHTML = `
+    <div>Conectado como <b style="color:var(--text)">${esc(S.profile.nome || firstName)}</b></div>
+    <div class="nav-user-email">${esc(currentUserEmail)}</div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="btn ghost small" data-action="open-cloud-dialog" style="flex:1;padding:6px 8px;font-size:.75rem">☁️ Nuvem</button>
+      <button class="btn danger small" data-action="logout" style="padding:6px 10px;font-size:.75rem">Sair</button>
+    </div>`;
+
   $$('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.route === route));
   $$('.screen').forEach(s => s.classList.toggle('active', s.dataset.screen === route));
 
@@ -541,8 +779,10 @@ function render(animate = false) {
 function go() {
   const r = location.hash.slice(1);
   route = RENDER[r] ? r : 'inicio';
-  render(true);
-  window.scrollTo({ top: 0 });
+  if (currentUserEmail) {
+    render(true);
+    window.scrollTo({ top: 0 });
+  }
 }
 
 function commit(msg) { save(); render(); if (msg) toast(msg); }
@@ -566,6 +806,21 @@ function addSession(workoutId, tipo, min) {
 }
 
 const ACTIONS = {
+  'switch-auth-tab': id => switchAuthTab(id),
+  'logout': () => logoutUser(),
+  'open-cloud-dialog': () => {
+    const cfg = getFirebaseConfig();
+    $('#cloud-config-input').value = cfg ? JSON.stringify(cfg, null, 2) : '';
+    $('#cloud-dialog-msg').textContent = cloud.enabled ? '✅ Conectado ao Firebase.' : 'Cole o firebaseConfig do seu projeto do Firebase.';
+    $('#cloud-dialog').showModal();
+  },
+  'close-cloud-dialog': () => $('#cloud-dialog').close(),
+  'clear-cloud-config': () => {
+    localStorage.removeItem(FB_CONFIG_KEY);
+    initCloud();
+    $('#cloud-dialog').close();
+    toast('Nuvem desativada · usando modo local');
+  },
   'add-water': id => {
     const before = score().total;
     today().water.push({ id: uid(), ml: +id, hora: timeNow() });
@@ -624,6 +879,147 @@ function openWorkoutDialog(w) {
 
 /* ---------- Formulários ---------- */
 const FORMS = {
+  login: async f => {
+    const email = f.email.value.trim().toLowerCase();
+    const senha = f.senha.value;
+    const errEl = $('#login-error');
+    errEl.textContent = '';
+
+    if (!isGmail(email)) {
+      errEl.textContent = 'Use um endereço @gmail.com válido.';
+      return;
+    }
+
+    // 1. Se a nuvem Firebase estiver ativa, autentica na nuvem primeiro
+    if (cloud.enabled && cloud.auth) {
+      try {
+        const { signInWithEmailAndPassword } = cloud.fbModules.authMod;
+        await signInWithEmailAndPassword(cloud.auth, email, senha);
+        const remoteState = await pullFromCloud(email);
+        const accs = loadAccounts();
+        accs[email] = { email, senha };
+        saveAccounts(accs);
+        enterAppWithUser(email, remoteState || loadUserState(email));
+        toast('Bem-vindo de volta! ☁️');
+        return;
+      } catch (err) {
+        errEl.textContent = 'Gmail ou senha incorretos na nuvem (ou conta ainda não cadastrada).';
+        return;
+      }
+    }
+
+    // 2. Autenticação local no aparelho
+    const accs = loadAccounts();
+    const acc = accs[email];
+    if (!acc || acc.senha !== senha) {
+      errEl.textContent = 'Gmail não encontrado ou senha incorreta.';
+      return;
+    }
+    enterAppWithUser(email, loadUserState(email));
+    toast('Bem-vindo de volta!');
+  },
+
+  register: async f => {
+    const nome = f.nome.value.trim();
+    const email = f.email.value.trim().toLowerCase();
+    const senha = f.senha.value;
+    const dia = +f.dia.value, mes = +f.mes.value, ano = +f.ano.value;
+    const peso = +String(f.peso.value).replace(',', '.');
+    const alturaM = normalizeMeters(f.altura_m.value);
+    const sexo = f.sexo.value;
+    const objetivo = f.objetivo.value;
+    const errEl = $('#register-error');
+    errEl.textContent = '';
+
+    if (nome.split(/\s+/).length < 2) {
+      errEl.textContent = 'Informe seu nome completo (nome e sobrenome).';
+      return;
+    }
+    if (!isGmail(email)) {
+      errEl.textContent = 'O e-mail precisa ser um @gmail.com válido.';
+      return;
+    }
+    if (senha.length < 6) {
+      errEl.textContent = 'A senha deve ter pelo menos 6 caracteres.';
+      return;
+    }
+    const idade = calcAgeFromDOB(dia, mes, ano);
+    if (idade == null) {
+      errEl.textContent = 'Data de nascimento inválida. Verifique dia, mês e ano.';
+      return;
+    }
+    if (!peso || peso < 25 || peso > 300) {
+      errEl.textContent = 'Informe um peso válido em kg (entre 25 e 300 kg).';
+      return;
+    }
+    if (!alturaM) {
+      errEl.textContent = 'Informe a altura em metros (ex.: 1.75).';
+      return;
+    }
+
+    const alturaCm = Math.round(alturaM * 100);
+    const newState = structuredClone(DEFAULT_STATE);
+    newState.profile = {
+      nome,
+      email,
+      nascimento: { dia, mes, ano },
+      sexo,
+      idade,
+      altura: alturaCm,
+      altura_m: alturaM,
+      peso,
+      atividade: 1.55,
+      objetivo,
+      configurado: true,
+    };
+    newState.measures = [{ id: uid(), data: dkey(), peso }];
+
+    // 1. Se a nuvem Firebase estiver ativa, cria a conta no Firebase Auth + Firestore
+    if (cloud.enabled && cloud.auth) {
+      try {
+        const { createUserWithEmailAndPassword } = cloud.fbModules.authMod;
+        await createUserWithEmailAndPassword(cloud.auth, email, senha);
+      } catch (err) {
+        if (err.code === 'auth/email-already-in-use') {
+          errEl.textContent = 'Esse Gmail já possui conta cadastrada. Vá em "Entrar".';
+        } else {
+          errEl.textContent = 'Erro ao criar conta na nuvem: ' + (err.message || err.code);
+        }
+        return;
+      }
+    } else {
+      const accs = loadAccounts();
+      if (accs[email]) {
+        errEl.textContent = 'Esse Gmail já está cadastrado neste aparelho. Vá em "Entrar".';
+        return;
+      }
+    }
+
+    const accs = loadAccounts();
+    accs[email] = { email, senha, nome };
+    saveAccounts(accs);
+    enterAppWithUser(email, newState);
+    await syncToCloud();
+    toast(`Conta criada! Bem-vindo, ${nome.split(' ')[0]} 🎉`);
+  },
+
+  cloud: async f => {
+    const cfg = parseFirebaseConfigInput(f.config.value);
+    if (!cfg) {
+      $('#cloud-dialog-msg').textContent = '❌ Formato inválido. Cole o objeto firebaseConfig com apiKey e projectId.';
+      return;
+    }
+    localStorage.setItem(FB_CONFIG_KEY, JSON.stringify(cfg));
+    const ok = await initCloud();
+    if (ok) {
+      $('#cloud-dialog').close();
+      if (currentUserEmail) await syncToCloud();
+      toast('☁️ Nuvem Firebase conectada com sucesso!');
+    } else {
+      $('#cloud-dialog-msg').textContent = '❌ Não foi possível conectar. Verifique os dados do Firebase.';
+    }
+  },
+
   session: f => addSession(f.workout.value, f.tipo.value, +f.min.value),
   meal: f => {
     const before = score().total;
@@ -634,9 +1030,22 @@ const FORMS = {
   },
   water: f => ACTIONS['add-water'](+f.ml.value),
   profile: f => {
+    const dia = +f.dia.value, mes = +f.mes.value, ano = +f.ano.value;
+    const idade = calcAgeFromDOB(dia, mes, ano);
+    if (idade == null) return toast('Data de nascimento inválida');
+    const alturaM = normalizeMeters(f.altura_m.value);
+    if (!alturaM) return toast('Informe a altura em metros (ex.: 1.75)');
     Object.assign(S.profile, {
-      sexo: f.sexo.value, idade: +f.idade.value, altura: +f.altura.value, peso: +f.peso.value,
-      atividade: +f.atividade.value, objetivo: f.objetivo.value, configurado: true,
+      nome: f.nome.value.trim(),
+      nascimento: { dia, mes, ano },
+      sexo: f.sexo.value,
+      idade,
+      altura_m: alturaM,
+      altura: Math.round(alturaM * 100),
+      peso: +f.peso.value,
+      atividade: +f.atividade.value,
+      objetivo: f.objetivo.value,
+      configurado: true,
     });
     commit('Perfil salvo · metas atualizadas');
   },
@@ -679,20 +1088,38 @@ document.addEventListener('submit', e => {
   fn(f);
 });
 
-// Autopreenche calorias e proteína ao escolher um alimento da lista
 document.addEventListener('input', e => {
   if (e.target.id === 'meal-nome') {
     const food = FOODS.find(f => f[0] === e.target.value);
     if (food) { $('#meal-kcal').value = food[1]; $('#meal-prot').value = food[2]; }
   }
-  // Sugere a atividade ao trocar o treino
   if (e.target.id === 'session-workout') $('#session-tipo').value = e.target.value ? 'musculacao' : 'caminhada';
+
+  // Mostra a idade calculada em tempo real no cadastro
+  if (['reg-dia', 'reg-mes', 'reg-ano'].includes(e.target.id)) {
+    const age = calcAgeFromDOB($('#reg-dia')?.value, $('#reg-mes')?.value, $('#reg-ano')?.value);
+    const preview = $('#reg-age-preview');
+    if (preview) preview.textContent = age != null ? `— ${age} anos` : '';
+  }
 });
 
 window.addEventListener('hashchange', go);
 
-// Atualiza a tela na virada do dia
 let lastDay = dkey();
-setInterval(() => { if (dkey() !== lastDay) { lastDay = dkey(); render(); } }, 60000);
+setInterval(() => { if (dkey() !== lastDay) { lastDay = dkey(); if (currentUserEmail) render(); } }, 60000);
 
-go();
+/* ---------- Inicialização ---------- */
+(async function bootstrap() {
+  await initCloud();
+  const savedEmail = localStorage.getItem(SESSION_KEY);
+  if (savedEmail) {
+    let state = loadUserState(savedEmail);
+    if (cloud.enabled) {
+      const remote = await pullFromCloud(savedEmail);
+      if (remote) state = remote;
+    }
+    enterAppWithUser(savedEmail, state);
+  } else {
+    render();
+  }
+})();
