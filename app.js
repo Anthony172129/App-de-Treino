@@ -9,16 +9,15 @@ const SESSION_KEY = 'pulso-session-v1';
 const FB_CONFIG_KEY = 'pulso-firebase-config-v1';
 const LEGACY_KEY = 'pulso-app-v1';
 
-// Se quiser deixar a configuração do Firebase fixa no código para todos os celulares
-// não precisarem colar nada, basta preencher os campos abaixo:
-const DEFAULT_FIREBASE_CONFIG = null;
-/* Exemplo:
+// Configuração oficial do Firebase (pulso-61be3) para sincronizar em qualquer celular:
 const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: "SUA_API_KEY",
-  authDomain: "seu-projeto.firebaseapp.com",
-  projectId: "seu-projeto",
+  apiKey: "AIzaSyCqT3-iDCx0vd4jijZCivUpufiwk21fzb4",
+  authDomain: "pulso-61be3.firebaseapp.com",
+  projectId: "pulso-61be3",
+  storageBucket: "pulso-61be3.firebasestorage.app",
+  messagingSenderId: "828082362073",
+  appId: "1:828082362073:web:6469e1da7e30724f0350c8",
 };
-*/
 
 const DEFAULT_STATE = {
   profile: {
@@ -903,7 +902,19 @@ const FORMS = {
         toast('Bem-vindo de volta! ☁️');
         return;
       } catch (err) {
-        errEl.textContent = 'Gmail ou senha incorretos na nuvem (ou conta ainda não cadastrada).';
+        const code = err?.code || '';
+        // Se o provedor Email/Senha ainda não foi ativado no painel do Firebase, tenta conta local/Firestore
+        if (code === 'auth/configuration-not-found' || code === 'auth/operation-not-allowed') {
+          const remoteState = await pullFromCloud(email);
+          const accs = loadAccounts();
+          const acc = accs[email];
+          if ((acc && acc.senha === senha) || remoteState) {
+            enterAppWithUser(email, remoteState || loadUserState(email));
+            toast('Bem-vindo de volta!');
+            return;
+          }
+        }
+        errEl.textContent = 'Gmail ou senha incorretos (ou conta ainda não cadastrada).';
         return;
       }
     }
@@ -980,12 +991,16 @@ const FORMS = {
         const { createUserWithEmailAndPassword } = cloud.fbModules.authMod;
         await createUserWithEmailAndPassword(cloud.auth, email, senha);
       } catch (err) {
-        if (err.code === 'auth/email-already-in-use') {
+        const code = err?.code || '';
+        if (code === 'auth/email-already-in-use') {
           errEl.textContent = 'Esse Gmail já possui conta cadastrada. Vá em "Entrar".';
-        } else {
-          errEl.textContent = 'Erro ao criar conta na nuvem: ' + (err.message || err.code);
+          return;
         }
-        return;
+        // Se o provedor Email/Senha ainda não foi ativado no console do Firebase, não bloqueia o cadastro
+        if (code !== 'auth/configuration-not-found' && code !== 'auth/operation-not-allowed') {
+          errEl.textContent = 'Erro ao criar conta na nuvem: ' + (err.message || code);
+          return;
+        }
       }
     } else {
       const accs = loadAccounts();
