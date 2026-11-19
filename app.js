@@ -1,7 +1,8 @@
 'use strict';
 
 /* =========================================================
-   Pulso — app de treino com Contas (Gmail + senha) e Nuvem (Firebase)
+   Pulso — app de treino com Contas (Gmail + senha), Nuvem (Firebase),
+   Execução de Treino Série por Série, Notificações e Hidratação no Treino
    ========================================================= */
 
 const ACCOUNTS_KEY = 'pulso-accounts-v1';
@@ -33,26 +34,36 @@ const DEFAULT_STATE = {
     objetivo: 'manter',
     configurado: false,
   },
+  notifications: {
+    enabled: true,
+    waterIntervalMin: 90,   // Lembrete de água a cada 90 min
+    mealHours: [8, 12, 16, 20], // Horários de cobrança de refeição
+    lastWaterRemindAt: 0,
+    lastMealRemindHour: -1,
+    lastMissedPromptAt: 0,
+  },
+  lastWorkoutAt: 0, // Timestamp (ms) do último treino concluído para cobrar após 24h
+  missedReasons: [], // Histórico de justificativas de falta
   trainingDays: [1, 2, 3, 4, 5, 6], // 0 = domingo
   bestStreak: 0,
   workouts: [
     { id: 'a', nome: 'Treino A', foco: 'Peito e tríceps', exercicios: [
-      { nome: 'Supino reto', series: 4, reps: '10', carga: '40kg' },
-      { nome: 'Supino inclinado halteres', series: 3, reps: '12', carga: '14kg' },
-      { nome: 'Crucifixo', series: 3, reps: '12', carga: '10kg' },
-      { nome: 'Tríceps corda', series: 4, reps: '12', carga: '20kg' },
+      { nome: 'Supino reto', series: 4, reps: '10', carga: '40' },
+      { nome: 'Supino inclinado halteres', series: 3, reps: '12', carga: '14' },
+      { nome: 'Crucifixo', series: 3, reps: '12', carga: '10' },
+      { nome: 'Tríceps corda', series: 4, reps: '12', carga: '20' },
     ] },
     { id: 'b', nome: 'Treino B', foco: 'Costas e bíceps', exercicios: [
-      { nome: 'Puxada frontal', series: 4, reps: '10', carga: '45kg' },
-      { nome: 'Remada curvada', series: 4, reps: '10', carga: '30kg' },
-      { nome: 'Rosca direta', series: 3, reps: '12', carga: '12kg' },
-      { nome: 'Rosca martelo', series: 3, reps: '12', carga: '10kg' },
+      { nome: 'Puxada frontal', series: 4, reps: '10', carga: '45' },
+      { nome: 'Remada curvada', series: 4, reps: '10', carga: '30' },
+      { nome: 'Rosca direta', series: 3, reps: '12', carga: '12' },
+      { nome: 'Rosca martelo', series: 3, reps: '12', carga: '10' },
     ] },
     { id: 'c', nome: 'Treino C', foco: 'Pernas e ombros', exercicios: [
-      { nome: 'Agachamento livre', series: 4, reps: '10', carga: '50kg' },
-      { nome: 'Leg press', series: 4, reps: '12', carga: '120kg' },
-      { nome: 'Cadeira extensora', series: 3, reps: '15', carga: '35kg' },
-      { nome: 'Desenvolvimento', series: 4, reps: '10', carga: '12kg' },
+      { nome: 'Agachamento livre', series: 4, reps: '10', carga: '50' },
+      { nome: 'Leg press', series: 4, reps: '12', carga: '120' },
+      { nome: 'Cadeira extensora', series: 3, reps: '15', carga: '35' },
+      { nome: 'Desenvolvimento', series: 4, reps: '10', carga: '12' },
     ] },
   ],
   measures: [],
@@ -114,7 +125,6 @@ function calcAgeFromDOB(dia, mes, ano) {
 function normalizeMeters(val) {
   let num = Number(String(val).replace(',', '.'));
   if (!num || isNaN(num)) return null;
-  // Se digitarem 175 por engano em vez de 1.75, converte para 1.75m
   if (num >= 100 && num <= 250) num = +(num / 100).toFixed(2);
   if (num < 1.0 || num > 2.5) return null;
   return +num.toFixed(2);
@@ -122,23 +132,22 @@ function normalizeMeters(val) {
 
 const isGmail = email => /^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(String(email || '').trim());
 
-/* ---------- Estado e Contas ---------- */
+/* ---------- Estado, Sessão Ativa de Treino e Contas ---------- */
 let currentUserEmail = null;
 let S = structuredClone(DEFAULT_STATE);
 let cloud = { enabled: false, auth: null, db: null, fbModules: null };
 
-function loadAccounts() {
-  try {
-    return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)) || {};
-  } catch (e) {
-    return {};
-  }
-}
+// Guarda o treino aberto na tela de execução série por série:
+// { workoutId, min, tipo, sets: { [exIdx]: [ { reps, carga, done } ] } }
+let activeExecution = null;
 
+function loadAccounts() {
+  try { return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)) || {}; }
+  catch (e) { return {}; }
+}
 function saveAccounts(accs) {
   localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accs));
 }
-
 function userStorageKey(email) {
   return `pulso-user-data-${email.toLowerCase().trim()}`;
 }
@@ -150,6 +159,8 @@ function hydrateState(saved) {
     ...base,
     ...saved,
     profile: { ...base.profile, ...(saved.profile || {}) },
+    notifications: { ...base.notifications, ...(saved.notifications || {}) },
+    missedReasons: saved.missedReasons || [],
   };
   if (merged.profile.nascimento) {
     const calc = calcAgeFromDOB(merged.profile.nascimento.dia, merged.profile.nascimento.mes, merged.profile.nascimento.ano);
@@ -182,11 +193,11 @@ function save() {
 
 /* ---------- Nuvem (Firebase Auth + Firestore) ---------- */
 function getFirebaseConfig() {
-  if (DEFAULT_FIREBASE_CONFIG && DEFAULT_FIREBASE_CONFIG.apiKey) return DEFAULT_FIREBASE_CONFIG;
   try {
     const saved = JSON.parse(localStorage.getItem(FB_CONFIG_KEY));
     if (saved && saved.apiKey && saved.projectId) return saved;
   } catch (e) { /* ignora */ }
+  if (DEFAULT_FIREBASE_CONFIG && DEFAULT_FIREBASE_CONFIG.apiKey) return DEFAULT_FIREBASE_CONFIG;
   return null;
 }
 
@@ -196,7 +207,7 @@ function parseFirebaseConfigInput(rawText) {
   try {
     const parsed = JSON.parse(txt);
     if (parsed.apiKey && parsed.projectId) return parsed;
-  } catch (e) { /* tenta extrair de código JS colado do console do Firebase */ }
+  } catch (e) { /* extrai de snippet JS */ }
   const extract = key => {
     const m = txt.match(new RegExp(`${key}\\s*:\\s*["']([^"']+)["']`));
     return m ? m[1] : undefined;
@@ -282,7 +293,7 @@ const ICON = {
   star: '<svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .6-5.3 4.7 1.6 7.2L12 17.8 5.7 21.5l1.6-7.2L2 9.6 9 9z"/></svg>',
 };
 
-/* ---------- Cálculos ---------- */
+/* ---------- Cálculos & Hidratação Científica ---------- */
 const P = () => S.profile;
 function bmr() {
   const p = P();
@@ -294,14 +305,39 @@ function kcalGoal() {
   return Math.max(P().sexo === 'f' ? 1200 : 1500, tdee() + adj);
 }
 const proteinGoal = () => Math.round(P().peso * (P().objetivo === 'manter' ? 1.6 : 2));
-const waterGoal = (k = dkey()) => Math.round((P().peso * 35) / 50) * 50 + (peek(k).sessions.length ? 500 : 0);
+
+// Meta basal do dia: 35 ml por kg de peso corporal
+const basalWaterGoal = () => Math.round((P().peso * 35) / 50) * 50;
+
+// Água extra recomendada DURANTE o treino (reposição de suor — ACSM / SBME):
+// ~0.12 ml por kg por minuto de exercício (ex.: para 75 kg em 60 min = ~540 ml -> arredondado para 550 ml,
+// ou ~180–220 ml a cada 15–20 minutos de treino).
+function workoutSweatWaterMl(min = 60, met = 5) {
+  const intensityFactor = met >= 7.5 ? 0.15 : 0.12; // treinos mais intensos transpiram mais
+  const raw = P().peso * intensityFactor * min;
+  return Math.max(200, Math.round(raw / 50) * 50);
+}
+
+// Total de água de treino exigida no dia k (soma dos treinos feitos ou estimativa de 60 min se for dia de treino)
+function todayWorkoutWaterNeed(k = dkey()) {
+  const sessions = peek(k).sessions;
+  if (sessions.length) {
+    return sum(sessions, s => workoutSweatWaterMl(s.min || 60, ACTIVITIES[s.tipo]?.met || 5));
+  }
+  return 0;
+}
+
+// Meta total do dia = Meta basal (35 ml/kg) + Água perdida transpirando nos treinos registrados no dia
+const waterGoal = (k = dkey()) => basalWaterGoal() + todayWorkoutWaterNeed(k);
 const waterOf = k => sum(peek(k).water, x => x.ml);
+const workoutWaterOf = k => sum(peek(k).water.filter(w => w.duranteTreino), x => x.ml);
+
 const kcalIn = k => sum(peek(k).meals, x => x.kcal);
 const protIn = k => sum(peek(k).meals, x => x.prot);
 const kcalOut = k => sum(peek(k).sessions, x => x.kcal);
 const trained = k => peek(k).sessions.length > 0;
 const isTrainingDay = d => S.trainingDays.includes(d.getDay());
-const sessionKcal = (tipo, min) => Math.round(ACTIVITIES[tipo].met * P().peso * (min / 60));
+const sessionKcal = (tipo, min) => Math.round((ACTIVITIES[tipo]?.met || 5) * P().peso * (min / 60));
 
 function streak() {
   let d = new Date(), n = 0;
@@ -346,6 +382,169 @@ function bmiClass(v) {
   return ['Obesidade', 'c-food'];
 }
 
+/* ---------- Sistema de Notificações e Cobrança (Água, Alimentação e 24h Treino) ---------- */
+function sendBrowserNotification(title, body, tag) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification(title, { body, tag, icon: 'https://cdn-icons-png.flaticon.com/512/2964/2964514.png' });
+    } catch (e) { /* fallback em mobile */ }
+  }
+}
+
+async function requestNotificationPermission() {
+  if (!('Notification' in window)) {
+    toast('Seu navegador usa apenas alertas internos na tela.');
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  S.notifications.enabled = true;
+  save();
+  render();
+  if (perm === 'granted') {
+    sendBrowserNotification('Pulso · Notificações ativadas!', 'Vamos te lembrar de beber água, se alimentar e não faltar ao treino.');
+    toast('🔔 Notificações ativadas no dispositivo!');
+  } else {
+    toast('Alertas visuais ativados dentro do app!');
+  }
+}
+
+function getLastWorkoutTimestamp() {
+  if (S.lastWorkoutAt) return S.lastWorkoutAt;
+  // Procura nos logs o último dia com treino
+  const days = Object.keys(S.log).filter(k => S.log[k]?.sessions?.length).sort();
+  if (!days.length) return 0;
+  const lastDayKey = days[days.length - 1];
+  const d = parseKey(lastDayKey);
+  d.setHours(18, 0, 0, 0);
+  return d.getTime();
+}
+
+function getActiveReminders() {
+  if (!currentUserEmail) return [];
+  const k = dkey();
+  const now = new Date();
+  const hour = now.getHours();
+  const alerts = [];
+
+  // 1. Verifica se passaram 24 horas desde o último treino em dia de treino
+  const lastW = getLastWorkoutTimestamp();
+  const hoursSinceWorkout = lastW ? (Date.now() - lastW) / 3600000 : 0;
+  const alreadyJustifiedToday = (S.missedReasons || []).some(r => r.data === k);
+
+  if (lastW > 0 && hoursSinceWorkout >= 24 && !trained(k) && isTrainingDay(now) && !alreadyJustifiedToday) {
+    const hRound = Math.floor(hoursSinceWorkout);
+    alerts.push({
+      type: 'warn',
+      id: 'missed-24h',
+      text: `⚠️ Faz <b>${hRound}h</b> desde o seu último treino! Por que você ainda não treinou hoje?`,
+      actions: `
+        <button class="btn primary small" data-action="go-train-now">Treinar agora</button>
+        <button class="btn ghost small" data-action="open-missed-dialog">Explicar motivo</button>
+      `,
+    });
+  }
+
+  // 2. Cobrança de Água (se bebeu menos que o esperado até a hora atual do dia)
+  const expectedWaterRatio = clamp01((hour - 7) / 14); // das 7h às 21h
+  const currentWaterRatio = waterOf(k) / waterGoal(k);
+  if (hour >= 8 && currentWaterRatio < expectedWaterRatio - 0.15 && waterOf(k) < waterGoal(k)) {
+    const falta = waterGoal(k) - waterOf(k);
+    alerts.push({
+      type: 'water',
+      id: 'water-remind',
+      text: `💧 <b>Hora de beber água!</b> Você bebeu ${fmt(waterOf(k))} ml hoje (faltam ${fmt(falta)} ml para a meta). Registre agora!`,
+      actions: `
+        <button class="btn water small" data-action="add-water" data-id="250">+250 ml agora</button>
+        <a class="btn ghost small" href="#agua">Abrir Água</a>
+      `,
+    });
+  }
+
+  // 3. Cobrança de Alimentação (cobra café após 8h, almoço após 12h, lanche após 16h, jantar após 20h)
+  const meals = peek(k).meals;
+  let missingMeal = null;
+  if (hour >= 8 && hour < 12 && !meals.length) missingMeal = 'Café da manhã';
+  else if (hour >= 12 && hour < 16 && !meals.some(m => m.tipo === 'Almoço')) missingMeal = 'Almoço';
+  else if (hour >= 16 && hour < 19 && meals.length < 2) missingMeal = 'Lanche da tarde';
+  else if (hour >= 19 && !meals.some(m => m.tipo === 'Jantar')) missingMeal = 'Jantar';
+
+  if (missingMeal) {
+    alerts.push({
+      type: 'food',
+      id: 'food-remind',
+      text: `🍽️ <b>Se alimente e registre!</b> Ainda não vimos seu registro de <b>${missingMeal}</b> hoje (${fmt(kcalIn(k))} / ${fmt(kcalGoal())} kcal).`,
+      actions: `<a class="btn food small" href="#calorias">Registrar refeição</a>`,
+    });
+  }
+
+  return alerts;
+}
+
+function checkPeriodicNotifications() {
+  if (!currentUserEmail || !S.notifications?.enabled) return;
+  const now = Date.now();
+  const k = dkey();
+  const hour = new Date().getHours();
+
+  // 1. Notificação de 24h após o último treino
+  const lastW = getLastWorkoutTimestamp();
+  const hoursSince = lastW ? (now - lastW) / 3600000 : 0;
+  const alreadyJustifiedToday = (S.missedReasons || []).some(r => r.data === k);
+  if (lastW > 0 && hoursSince >= 24 && !trained(k) && isTrainingDay(new Date()) && !alreadyJustifiedToday) {
+    if (now - (S.notifications.lastMissedPromptAt || 0) > 4 * 3600000) {
+      S.notifications.lastMissedPromptAt = now;
+      save();
+      sendBrowserNotification(
+        '⚠️ Faz 24h desde o seu último treino!',
+        'Você ainda não registrou seu treino de hoje. Por que você faltou?',
+        'pulso-missed-24h'
+      );
+      const dlg = $('#missed-workout-dialog');
+      if (dlg && !dlg.open) {
+        $('#missed-workout-sub').textContent = `Já se passaram ${Math.floor(hoursSince)} horas desde o seu último treino. Conta pra gente o que houve ou inicie seu treino agora!`;
+        dlg.showModal();
+      }
+    }
+  }
+
+  // 2. Notificação periódica de Água
+  const intervalMs = (S.notifications.waterIntervalMin || 90) * 60000;
+  if (hour >= 8 && hour <= 22 && waterOf(k) < waterGoal(k)) {
+    if (now - (S.notifications.lastWaterRemindAt || 0) >= intervalMs) {
+      S.notifications.lastWaterRemindAt = now;
+      save();
+      sendBrowserNotification(
+        '💧 Beba água e registre no Pulso!',
+        `Você bebeu ${fmt(waterOf(k))} ml de ${fmt(waterGoal(k))} ml hoje. Tome um copo de 250 ml agora!`,
+        'pulso-water'
+      );
+    }
+  }
+
+  // 3. Notificação nos horários de refeição
+  if ([8, 12, 16, 20].includes(hour) && S.notifications.lastMealRemindHour !== hour) {
+    S.notifications.lastMealRemindHour = hour;
+    save();
+    sendBrowserNotification(
+      '🍽️ Hora de se alimentar!',
+      `Não esqueça de fazer sua refeição e registrar as calorias no Pulso.`,
+      'pulso-meal'
+    );
+  }
+}
+
+function renderAlertBanners() {
+  const box = $('#alert-banners');
+  if (!box) return;
+  const alerts = getActiveReminders();
+  box.innerHTML = alerts.map(a => `
+    <div class="alert-banner ${a.type}">
+      <div>${a.text}</div>
+      <div class="alert-banner-actions">${a.actions}</div>
+    </div>
+  `).join('');
+}
+
 /* ---------- Componentes ---------- */
 function ring(pct, size, stroke, color) {
   const r = (size - stroke) / 2, c = 2 * Math.PI * r, h = size / 2;
@@ -368,12 +567,13 @@ const setupBanner = () => P().configurado ? '' : `
 function renderInicio() {
   const k = dkey(), sc = score(k), st = streak();
   const total = totalPoints(), level = Math.floor(total / 500) + 1, inLevel = total % 500;
+  const notifPerm = ('Notification' in window) ? Notification.permission : 'unsupported';
 
   const goals = [
     { icon: ICON.dumbbell, cls: 'lime', color: 'var(--lime)', title: 'Treino',
-      desc: trained(k) ? `Concluído · ${peek(k).sessions.map(s => esc(s.nome)).join(', ')}` : sc.rest ? 'Dia de descanso — pontos garantidos' : 'Registre seu treino de hoje',
+      desc: trained(k) ? `Concluído · ${peek(k).sessions.map(s => esc(s.nome)).join(', ')}` : sc.rest ? 'Dia de descanso — pontos garantidos' : 'Toque na aba Treinos para abrir e preencher suas séries',
       pct: sc.tr, pts: sc.treino, max: POINTS.treino },
-    { icon: ICON.drop, cls: 'water', color: 'var(--water)', title: 'Água',
+    { icon: ICON.drop, cls: 'water', color: 'var(--water)', title: 'Água (Dia + Treino)',
       desc: `${fmt(waterOf(k))} de ${fmt(waterGoal(k))} ml`, pct: sc.w, pts: sc.agua, max: POINTS.agua },
     { icon: ICON.fire, cls: 'food', color: 'var(--food)', title: 'Alimentação',
       desc: kcalIn(k) ? `${fmt(kcalIn(k))} de ${fmt(kcalGoal())} kcal${sc.ratio > 1.1 ? ' · acima da meta' : ''}` : 'Nenhuma refeição registrada',
@@ -391,7 +591,7 @@ function renderInicio() {
 
   return `${setupBanner()}
   <div class="card hero">
-    <div class="ring-wrap">${ring(sc.total / 100, 200, 16, 'var(--lime)')}
+    <div class="ring-wrap">${ring(sc.total / 100, 190, 16, 'var(--lime)')}
       <div class="ring-center"><div class="big">${sc.total}%</div><div class="lbl">meta do dia</div></div>
     </div>
     <div class="goals">
@@ -413,11 +613,134 @@ function renderInicio() {
       <h2>Últimos 7 dias</h2><p class="sub">Pontuação diária</p>
       <div class="week">${week}</div>
     </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>🔔 Lembretes & Cobrança Automática</h2>
+        <p class="sub" style="margin-bottom:6px">Notificações de "Beba água", "Se alimente" e alerta de 24h após o último treino caso você falte.</p>
+      </div>
+      <button class="btn ${notifPerm === 'granted' ? 'ghost' : 'primary'} small" data-action="enable-notifications">
+        ${notifPerm === 'granted' ? '✅ Notificações Ativas (Testar)' : '🔔 Ativar notificações no celular'}
+      </button>
+    </div>
+    <form class="form" data-form="notif-settings" style="margin-top:8px">
+      <div class="row-2">
+        <label class="field">
+          <span>Lembrar de beber água a cada:</span>
+          <select name="waterIntervalMin">
+            ${[[60, '60 minutos (1h)'], [90, '90 minutos (1h30)'], [120, '120 minutos (2h)']].map(([v, l]) => `<option value="${v}" ${+S.notifications.waterIntervalMin === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+        </label>
+        <label class="field">
+          <span>Cobrança de falta (24h após último treino)</span>
+          <input value="Ativada automaticamente" disabled />
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="submit" class="btn ghost small">Salvar intervalo</button>
+        <button type="button" class="btn ghost small" data-action="open-missed-dialog">Simular cobrança de 24h sem treino</button>
+      </div>
+    </form>
   </div>`;
 }
 
-/* ---------- Tela: Treinos ---------- */
+/* ---------- Tela: Treinos (Com Formulário Série por Série ao tocar no treino) ---------- */
+function startWorkoutExecution(workoutId) {
+  const w = S.workouts.find(x => x.id === workoutId);
+  if (!w) return;
+  const sets = {};
+  w.exercicios.forEach((ex, exIdx) => {
+    const count = Math.max(1, Number(ex.series) || 1);
+    sets[exIdx] = Array.from({ length: count }, () => ({
+      reps: String(ex.reps || '10'),
+      carga: String(ex.carga || '').replace(/kg/i, '').trim(),
+      done: true,
+    }));
+  });
+  activeExecution = { workoutId: w.id, min: 60, tipo: 'musculacao', sets };
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function renderExecutionView() {
+  const w = S.workouts.find(x => x.id === activeExecution?.workoutId);
+  if (!w) { activeExecution = null; return ''; }
+  const sweatMl = workoutSweatWaterMl(activeExecution.min || 60, ACTIVITIES[activeExecution.tipo]?.met || 5);
+  const per15Min = Math.round(sweatMl / Math.max(1, (activeExecution.min || 60) / 15));
+
+  return `
+  <div class="exec-screen" id="exec-screen">
+    <div class="card-head">
+      <div>
+        <p class="eyebrow" style="color:var(--lime)">Executando treino · Preencha Repetições e Carga de cada série</p>
+        <h2>${esc(w.nome)} — ${esc(w.foco)}</h2>
+      </div>
+      <button type="button" class="btn ghost small" data-action="cancel-execution">← Voltar aos treinos</button>
+    </div>
+
+    <div class="sweat-box">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div>
+          <b class="c-water">💧 Hidratação durante este treino: ~${fmt(sweatMl)} ml</b>
+          <p class="note" style="margin:2px 0 0">Para repor o suor, beba cerca de <b>${fmt(per15Min)} ml a cada 15 min</b> de treino.</p>
+        </div>
+        <button type="button" class="btn water small" data-action="add-workout-water" data-id="${per15Min}">+ Beber ${per15Min} ml no treino</button>
+      </div>
+    </div>
+
+    <form class="form" id="exec-workout-form" data-form="exec-workout">
+      <div class="row-2">
+        <label class="field">
+          <span>Modalidade</span>
+          <select name="tipo" id="exec-tipo">
+            ${Object.entries(ACTIVITIES).map(([id, a]) => `<option value="${id}" ${activeExecution.tipo === id ? 'selected' : ''}>${a.nome}</option>`).join('')}
+          </select>
+        </label>
+        <label class="field">
+          <span>Duração do treino (min)</span>
+          <input name="min" id="exec-min" type="number" min="5" max="600" value="${activeExecution.min}" required />
+        </label>
+      </div>
+
+      ${w.exercicios.map((ex, exIdx) => {
+        const exSets = activeExecution.sets[exIdx] || [];
+        return `
+        <div class="exec-ex-card" data-ex-idx="${exIdx}">
+          <div class="exec-ex-head">
+            <div class="exec-ex-title">${exIdx + 1}. ${esc(ex.nome)}</div>
+            <div class="exec-ex-meta">${exSets.length} ${exSets.length === 1 ? 'série' : 'séries'} · Meta: ${esc(ex.reps)} reps</div>
+          </div>
+          <div class="sets-table-head">
+            <span>Série</span>
+            <span>Repetições</span>
+            <span>Carga (kg)</span>
+            <span>OK</span>
+          </div>
+          ${exSets.map((s, sIdx) => `
+            <div class="set-row ${s.done ? 'done' : ''}" data-ex="${exIdx}" data-set="${sIdx}">
+              <div class="set-badge">${sIdx + 1}ª</div>
+              <input type="text" inputmode="numeric" name="reps-${exIdx}-${sIdx}" value="${esc(s.reps)}" placeholder="Reps" aria-label="Repetições da ${sIdx + 1}ª série" required />
+              <input type="text" inputmode="decimal" name="carga-${exIdx}-${sIdx}" value="${esc(s.carga)}" placeholder="Ex: 20kg" aria-label="Carga da ${sIdx + 1}ª série" />
+              <button type="button" class="set-check" data-action="toggle-set-done" data-ex="${exIdx}" data-set="${sIdx}" title="Marcar série concluída">✓</button>
+            </div>
+          `).join('')}
+        </div>`;
+      }).join('')}
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:6px">
+        <button type="button" class="btn ghost" data-action="cancel-execution">Cancelar</button>
+        <button type="submit" class="btn primary" id="finish-exec-btn">✅ Finalizar e salvar treino</button>
+      </div>
+    </form>
+  </div>`;
+}
+
 function renderTreinos() {
+  if (activeExecution) {
+    return renderExecutionView();
+  }
+
   const k = dkey(), st = streak(), sessions = peek(k).sessions;
   const now = new Date();
 
@@ -431,10 +754,31 @@ function renderTreinos() {
     heat += `<div class="heat-d ${cls} ${kk === k ? 'today' : ''}" title="${d.toLocaleDateString('pt-BR')}">${d.getDate()}</div>`;
   }
 
-  const opts = S.workouts.map(w => `<option value="${w.id}">${esc(w.nome)} — ${esc(w.foco)}</option>`).join('');
-  const acts = Object.entries(ACTIVITIES).map(([id, a]) => `<option value="${id}">${a.nome}</option>`).join('');
-
   return `
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>Meus treinos</h2>
+        <p class="sub">Toque em um treino para abrir a ficha e preencher as <b>Repetições e Carga</b> de cada série.</p>
+      </div>
+      <button class="btn primary small" data-action="new-workout" id="new-workout">+ Criar novo treino</button>
+    </div>
+    ${S.workouts.length ? S.workouts.map(w => `
+      <div class="plan" id="plan-${w.id}">
+        <div class="plan-head" data-action="open-workout-exec" data-id="${w.id}">
+          <div>
+            <div class="plan-name">${esc(w.nome)}</div>
+            <div class="plan-focus">${esc(w.foco)} · ${w.exercicios.length} exercícios (${sum(w.exercicios, e => e.series)} séries no total)</div>
+          </div>
+          <button type="button" class="btn primary small" data-action="open-workout-exec" data-id="${w.id}">Abrir e treinar →</button>
+        </div>
+        <div class="plan-actions">
+          <button class="btn ghost small" data-action="edit-workout" data-id="${w.id}">Editar exercícios / séries</button>
+          <button class="btn danger small" data-action="del-workout" data-id="${w.id}">Excluir</button>
+        </div>
+      </div>`).join('') : '<p class="empty">Nenhum treino cadastrado. Toque em "+ Criar novo treino".</p>'}
+  </div>
+
   <div class="grid-2">
     <div class="card">
       <div class="streak">
@@ -445,41 +789,21 @@ function renderTreinos() {
       <div class="heat">${heat}</div>
       <div class="legend"><span><i style="background:var(--lime)"></i>Treinou</span><span><i style="background:hsl(356 80% 64% / .3)"></i>Faltou</span><span><i style="box-shadow:inset 0 0 0 1px var(--line)"></i>Descanso</span></div>
     </div>
-    <div class="card">
-      <h2>Registrar treino de hoje</h2><p class="sub">${trained(k) ? 'Treino de hoje concluído. Pode registrar mais atividades.' : 'Marque o treino para manter sua sequência.'}</p>
-      <form class="form" data-form="session" id="session-form">
-        <label class="field"><span>Treino</span><select name="workout" id="session-workout">${opts}<option value="">Atividade avulsa</option></select></label>
-        <div class="row">
-          <label class="field"><span>Atividade</span><select name="tipo" id="session-tipo">${acts}</select></label>
-          <label class="field"><span>Duração (min)</span><input name="min" id="session-min" type="number" min="5" max="600" value="60" required /></label>
-        </div>
-        <button class="btn primary" id="session-save">Concluir treino</button>
-      </form>
-      ${sessions.length ? `<div class="group-title"><span>Hoje</span><span>${fmt(kcalOut(k))} kcal gastas</span></div>
-      <ul class="list">${sessions.map(s => `<li class="item"><div><div class="t">${esc(s.nome)}</div><div class="m">${ACTIVITIES[s.tipo]?.nome} · ${s.min} min · ${s.hora}</div></div><div class="val">${fmt(s.kcal)} kcal</div>${del('del-session', s.id)}</li>`).join('')}</ul>` : ''}
-    </div>
-  </div>
 
-  <div class="card">
-    <div class="card-head">
-      <div><h2>Meus treinos</h2><p class="sub">Sua ficha de treino. Toque para ver os exercícios.</p></div>
-      <button class="btn ghost small" data-action="new-workout" id="new-workout">+ Novo treino</button>
-    </div>
-    ${S.workouts.length ? S.workouts.map(w => `
-      <div class="plan" id="plan-${w.id}">
-        <div class="plan-head" data-action="toggle-plan" data-id="${w.id}">
-          <div><div class="plan-name">${esc(w.nome)}</div><div class="plan-focus">${esc(w.foco)} · ${w.exercicios.length} exercícios</div></div>
-          <span class="chev">${ICON.chev}</span>
-        </div>
-        <div class="plan-body">
-          <ul class="ex-list">${w.exercicios.map(e => `<li>${esc(e.nome)}<span>${esc(e.series)}×${esc(e.reps)}${e.carga ? ` · ${esc(e.carga)}` : ''}</span></li>`).join('') || '<li>Nenhum exercício</li>'}</ul>
-          <div class="plan-actions">
-            <button class="btn primary small" data-action="quick-session" data-id="${w.id}">Concluir hoje</button>
-            <button class="btn ghost small" data-action="edit-workout" data-id="${w.id}">Editar</button>
-            <button class="btn danger small" data-action="del-workout" data-id="${w.id}">Excluir</button>
+    <div class="card">
+      <h2>Treinos concluídos hoje</h2>
+      <p class="sub">${sessions.length ? `${fmt(kcalOut(k))} kcal gastas hoje` : 'Nenhum treino finalizado hoje ainda.'}</p>
+      ${sessions.length ? `<ul class="list">${sessions.map(s => `
+        <li class="item">
+          <div>
+            <div class="t">${esc(s.nome)}</div>
+            <div class="m">${ACTIVITIES[s.tipo]?.nome || 'Treino'} · ${s.min} min · ${s.hora}</div>
+            ${s.detalhes?.length ? `<div class="m" style="margin-top:4px;color:var(--text)">${s.detalhes.map(d => `${esc(d.nome)}: ${d.series.map(sr => `${esc(sr.reps)}x${esc(sr.carga || '0')}kg`).join(', ')}`).join(' · ')}</div>` : ''}
           </div>
-        </div>
-      </div>`).join('') : '<p class="empty">Nenhum treino cadastrado.</p>'}
+          <div class="val">${fmt(s.kcal)} kcal</div>
+          ${del('del-session', s.id)}
+        </li>`).join('')}</ul>` : '<p class="empty">Toque em "Abrir e treinar" em um dos seus treinos acima para preencher suas séries.</p>'}
+    </div>
   </div>
 
   <div class="card">
@@ -503,9 +827,9 @@ function renderCalorias() {
 
   return `${setupBanner()}
   <div class="grid-2">
-    <div class="card hero" style="grid-template-columns:auto 1fr">
-      <div class="ring-wrap">${ring(eaten / goal, 170, 14, eaten > goal * 1.1 ? 'var(--danger)' : 'var(--food)')}
-        <div class="ring-center"><div class="big" style="font-size:2rem">${fmt(Math.abs(left))}</div><div class="lbl">${left >= 0 ? 'kcal restantes' : 'kcal acima'}</div></div>
+    <div class="card hero" style="grid-template-columns:auto minmax(0,1fr)">
+      <div class="ring-wrap">${ring(eaten / goal, 165, 14, eaten > goal * 1.1 ? 'var(--danger)' : 'var(--food)')}
+        <div class="ring-center"><div class="big" style="font-size:1.9rem">${fmt(Math.abs(left))}</div><div class="lbl">${left >= 0 ? 'kcal restantes' : 'kcal acima'}</div></div>
       </div>
       <div class="goals" style="display:grid;gap:10px">
         ${stat('Consumido', fmt(eaten), 'kcal')}
@@ -519,7 +843,7 @@ function renderCalorias() {
         <label class="field"><span>Refeição</span><select name="tipo" id="meal-tipo">${MEAL_TYPES.map(t => `<option ${t === defaultMeal() ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
         <label class="field"><span>Alimento</span><input name="nome" id="meal-nome" list="foods" required placeholder="Ex.: Frango grelhado (100g)" autocomplete="off" /></label>
         <datalist id="foods">${FOODS.map(f => `<option value="${f[0]}">`).join('')}</datalist>
-        <div class="row">
+        <div class="row-2">
           <label class="field"><span>Calorias (kcal)</span><input name="kcal" id="meal-kcal" type="number" min="0" max="5000" required /></label>
           <label class="field"><span>Proteína (g)</span><input name="prot" id="meal-prot" type="number" min="0" max="500" step="0.1" /></label>
         </div>
@@ -541,7 +865,7 @@ function renderCalorias() {
         ${stat('Gasto em treinos hoje', fmt(kcalOut(k)), 'kcal')}
         ${stat('Saldo do dia', (eaten - tdee() - kcalOut(k) > 0 ? '+' : '') + fmt(eaten - tdee() - kcalOut(k)), 'kcal')}
       </div>
-      <p class="note">Objetivo atual: ${objetivo}. Para ganhar os 30 pontos de alimentação, fique entre 90% e 110% da meta. Altere o objetivo na aba Medidas.</p>
+      <p class="note">Objetivo atual: ${objetivo}. Para ganhar os 30 pontos de alimentação, fique entre 90% e 110% da meta.</p>
     </div>
   </div>`;
 }
@@ -550,9 +874,15 @@ function defaultMeal() {
   return h < 10 ? 'Café da manhã' : h < 15 ? 'Almoço' : h < 19 ? 'Lanche' : h < 22 ? 'Jantar' : 'Ceia';
 }
 
-/* ---------- Tela: Água ---------- */
+/* ---------- Tela: Água (Com Cálculo de Água do Dia + Água Durante o Treino) ---------- */
 function renderAgua() {
   const k = dkey(), drank = waterOf(k), goal = waterGoal(k), pct = drank / goal, water = peek(k).water;
+  const basal = basalWaterGoal();
+  const trainedMinutes = sum(peek(k).sessions, s => s.min || 60);
+  const estSweat60 = workoutSweatWaterMl(60, 5);
+  const todaySweatNeed = todayWorkoutWaterNeed(k) || estSweat60;
+  const drankInWorkout = workoutWaterOf(k);
+  const sip15 = Math.round(estSweat60 / 4);
 
   let week = '';
   for (let i = 6; i >= 0; i--) {
@@ -566,25 +896,49 @@ function renderAgua() {
   <div class="card water-hero">
     <div class="glass"><div class="glass-fill" style="height:${clamp01(pct) * 100}%"></div><div class="glass-label">${Math.round(pct * 100)}%</div></div>
     <div>
-      <p class="eyebrow">Bebido hoje</p>
+      <p class="eyebrow">Bebido hoje (Dia + Treino)</p>
       <div class="water-num">${fmt(drank)} <small>/ ${fmt(goal)} ml</small></div>
       <p class="note">${drank >= goal ? 'Meta de água batida! 30 pontos garantidos.' : `Faltam ${fmt(goal - drank)} ml · cerca de ${Math.ceil((goal - drank) / 250)} copos de 250 ml.`}</p>
       <div class="quick">
         ${[200, 250, 350, 500].map(ml => `<button class="btn" data-action="add-water" data-id="${ml}" id="water-${ml}">+${ml} ml<small>${ml === 200 ? 'copo pequeno' : ml === 250 ? 'copo' : ml === 350 ? 'lata' : 'garrafa'}</small></button>`).join('')}
       </div>
-      <form class="form" data-form="water" id="water-form" style="grid-template-columns:1fr auto;margin-top:10px">
+      <form class="form" data-form="water" id="water-form" style="grid-template-columns:minmax(0,1fr) auto;margin-top:10px">
         <input name="ml" id="water-custom" type="number" min="10" max="3000" placeholder="Outra quantidade (ml)" required />
         <button class="btn water" id="water-save">Adicionar</button>
       </form>
     </div>
   </div>
+
+  <!-- Card específico de Hidratação Durante o Treino (reposição de suor) -->
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>💦 Água Durante o Treino (Reposição do Suor)</h2>
+        <p class="sub">Segundo o Colégio Americano de Medicina do Esporte (ACSM), além da água do dia (${fmt(basal)} ml), você perde líquido transpirando e deve repor durante o treino.</p>
+      </div>
+    </div>
+    <div class="grid-3">
+      ${stat('Água basal do dia', fmt(basal), 'ml (35ml/kg)')}
+      ${stat('Meta durante o treino', fmt(todaySweatNeed), `ml (${trainedMinutes || 60} min)`)}
+      ${stat('Bebido no treino hoje', fmt(drankInWorkout), `de ${fmt(todaySweatNeed)} ml`)}
+    </div>
+    ${bar(drankInWorkout / todaySweatNeed, 'var(--water)')}
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px">
+      <p class="note" style="margin:0">Recomendação para o seu peso (${P().peso} kg): beber <b>~${fmt(sip15)} ml a cada 15 minutos</b> durante o exercício.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn water small" data-action="add-workout-water" data-id="${sip15}">+${sip15} ml (gole de 15 min)</button>
+        <button class="btn ghost small" data-action="add-workout-water" data-id="500">+500 ml (garrafa de treino)</button>
+      </div>
+    </div>
+  </div>
+
   <div class="grid-2">
     <div class="card">
       <h2>Registros de hoje</h2>
-      ${water.length ? `<ul class="list" style="margin-top:12px">${[...water].reverse().map(w => `<li class="item"><div><div class="t">Água</div><div class="m">${w.hora}</div></div><div class="val c-water">${fmt(w.ml)} ml</div>${del('del-water', w.id)}</li>`).join('')}</ul>` : '<p class="empty">Nenhum registro ainda. Comece com um copo!</p>'}
+      ${water.length ? `<ul class="list" style="margin-top:12px">${[...water].reverse().map(w => `<li class="item"><div><div class="t">${w.duranteTreino ? '💦 Água durante o treino' : '💧 Água do dia'}</div><div class="m">${w.hora}</div></div><div class="val c-water">${fmt(w.ml)} ml</div>${del('del-water', w.id)}</li>`).join('')}</ul>` : '<p class="empty">Nenhum registro ainda. Comece com um copo!</p>'}
     </div>
     <div class="card">
-      <h2>Últimos 7 dias</h2><p class="sub">Meta: 35 ml por kg (${fmt(P().peso)} kg) + 500 ml em dias de treino</p>
+      <h2>Últimos 7 dias</h2><p class="sub">Meta diária: ${fmt(basal)} ml basal + reposição dos treinos do dia</p>
       <div class="week">${week}</div>
     </div>
   </div>`;
@@ -637,7 +991,7 @@ function renderMedidas() {
           <div class="dob-row">
             <input name="dia" id="pf-dia" type="number" min="1" max="31" value="${dob.dia}" required aria-label="Dia" />
             <select name="mes" id="pf-mes" required aria-label="Mês">
-              ${['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
+              ${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
                 .map((m, idx) => `<option value="${idx + 1}" ${+dob.mes === idx + 1 ? 'selected' : ''}>${pad(idx + 1)} · ${m}</option>`).join('')}
             </select>
             <input name="ano" id="pf-ano" type="number" min="1920" max="2020" value="${dob.ano}" required aria-label="Ano" />
@@ -723,6 +1077,7 @@ function enterAppWithUser(email, stateData) {
   $('#auth-gate').style.display = 'none';
   $('#app-shell').style.display = '';
   render(true);
+  checkPeriodicNotifications();
 }
 
 async function logoutUser() {
@@ -730,21 +1085,21 @@ async function logoutUser() {
     try { await cloud.fbModules.authMod.signOut(cloud.auth); } catch (e) { /* ignora */ }
   }
   currentUserEmail = null;
+  activeExecution = null;
   localStorage.removeItem(SESSION_KEY);
   $('#app-shell').style.display = 'none';
-  $('#auth-gate').style.display = 'grid';
+  $('#auth-gate').style.display = 'flex';
   switchAuthTab('login');
 }
 
 /* ---------- Renderização e rotas ---------- */
 const RENDER = { inicio: renderInicio, treinos: renderTreinos, calorias: renderCalorias, agua: renderAgua, medidas: renderMedidas };
 let route = 'inicio';
-const openPlans = new Set();
 
 function render(animate = false) {
   if (!currentUserEmail) {
     $('#app-shell').style.display = 'none';
-    $('#auth-gate').style.display = 'grid';
+    $('#auth-gate').style.display = 'flex';
     return;
   }
   const sc = score();
@@ -763,12 +1118,13 @@ function render(animate = false) {
       <button class="btn danger small" data-action="logout" style="padding:6px 10px;font-size:.75rem">Sair</button>
     </div>`;
 
+  renderAlertBanners();
+
   $$('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.route === route));
   $$('.screen').forEach(s => s.classList.toggle('active', s.dataset.screen === route));
 
   const el = $(`#screen-${route}`);
   el.innerHTML = RENDER[route]();
-  openPlans.forEach(id => $(`#plan-${id}`)?.classList.add('open'));
   if (animate) {
     el.classList.add('enter');
     setTimeout(() => el.classList.remove('enter'), 1100);
@@ -792,21 +1148,47 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
 }
 
 /* ---------- Ações ---------- */
-function addSession(workoutId, tipo, min) {
-  const w = S.workouts.find(x => x.id === workoutId);
-  const before = score().total;
-  today().sessions.push({ id: uid(), workoutId, nome: w ? w.nome : ACTIVITIES[tipo].nome, tipo, min, kcal: sessionKcal(tipo, min), hora: timeNow() });
-  const gained = score().total - before;
-  commit(gained > 0 ? `Treino concluído! +${gained} pontos 🔥` : 'Atividade registrada');
-}
-
 const ACTIONS = {
   'switch-auth-tab': id => switchAuthTab(id),
   'logout': () => logoutUser(),
+  'enable-notifications': () => requestNotificationPermission(),
+  'open-missed-dialog': () => {
+    const lastW = getLastWorkoutTimestamp();
+    const hours = lastW ? Math.max(24, Math.floor((Date.now() - lastW) / 3600000)) : 24;
+    $('#missed-workout-sub').textContent = `Já se passaram ${hours} horas desde o seu último treino registrado. Por que você faltou ao treino?`;
+    $('#missed-workout-dialog').showModal();
+  },
+  'go-train-now': () => {
+    $('#missed-workout-dialog')?.close();
+    location.hash = '#treinos';
+    if (S.workouts.length) startWorkoutExecution(S.workouts[0].id);
+  },
+  'open-workout-exec': id => {
+    if (route !== 'treinos') location.hash = '#treinos';
+    startWorkoutExecution(id);
+  },
+  'cancel-execution': () => {
+    activeExecution = null;
+    render();
+  },
+  'toggle-set-done': (id, btn) => {
+    if (!activeExecution) return;
+    const exIdx = +btn.dataset.ex, sIdx = +btn.dataset.set;
+    const row = btn.closest('.set-row');
+    const repsInput = row.querySelector(`[name="reps-${exIdx}-${sIdx}"]`);
+    const cargaInput = row.querySelector(`[name="carga-${exIdx}-${sIdx}"]`);
+    const item = activeExecution.sets[exIdx]?.[sIdx];
+    if (item) {
+      item.reps = repsInput.value;
+      item.carga = cargaInput.value;
+      item.done = !item.done;
+      row.classList.toggle('done', item.done);
+    }
+  },
   'open-cloud-dialog': () => {
     const cfg = getFirebaseConfig();
     $('#cloud-config-input').value = cfg ? JSON.stringify(cfg, null, 2) : '';
@@ -818,13 +1200,19 @@ const ACTIONS = {
     localStorage.removeItem(FB_CONFIG_KEY);
     initCloud();
     $('#cloud-dialog').close();
-    toast('Nuvem desativada · usando modo local');
+    toast('Configuração personalizada removida');
   },
   'add-water': id => {
     const before = score().total;
-    today().water.push({ id: uid(), ml: +id, hora: timeNow() });
+    today().water.push({ id: uid(), ml: +id, hora: timeNow(), duranteTreino: false });
     const gained = score().total - before;
     commit(`+${id} ml de água${gained > 0 ? ` · +${gained} pts` : ''}`);
+  },
+  'add-workout-water': id => {
+    const before = score().total;
+    today().water.push({ id: uid(), ml: +id, hora: timeNow(), duranteTreino: true });
+    const gained = score().total - before;
+    commit(`💦 +${id} ml hidratado no treino!${gained > 0 ? ` · +${gained} pts` : ''}`);
   },
   'del-water': id => { today().water = today().water.filter(x => x.id !== id); commit('Registro removido'); },
   'del-meal': id => { today().meals = today().meals.filter(x => x.id !== id); commit('Alimento removido'); },
@@ -835,11 +1223,6 @@ const ACTIONS = {
     S.trainingDays = S.trainingDays.includes(d) ? S.trainingDays.filter(x => x !== d) : [...S.trainingDays, d].sort();
     commit();
   },
-  'toggle-plan': id => {
-    openPlans.has(id) ? openPlans.delete(id) : openPlans.add(id);
-    $(`#plan-${id}`).classList.toggle('open');
-  },
-  'quick-session': id => addSession(id, 'musculacao', 60),
   'del-workout': id => {
     const w = S.workouts.find(x => x.id === id);
     if (w && confirm(`Excluir "${w.nome}"?`)) { S.workouts = S.workouts.filter(x => x.id !== id); commit('Treino excluído'); }
@@ -851,14 +1234,13 @@ const ACTIONS = {
   'close-dialog': () => $('#workout-dialog').close(),
 };
 
-/* ---------- Diálogo de treino ---------- */
-function addExRow(e = { nome: '', series: 3, reps: '12', carga: '' }) {
+/* ---------- Diálogo de Criar/Editar Ficha de Treino ---------- */
+function addExRow(e = { nome: '', series: 3, reps: '12' }) {
   const row = document.createElement('div');
   row.className = 'ex-row';
-  row.innerHTML = `<input name="ex-nome" placeholder="Exercício" value="${esc(e.nome)}" aria-label="Exercício" />
-    <input name="ex-series" type="number" min="1" max="20" value="${esc(e.series)}" aria-label="Séries" />
-    <input name="ex-reps" value="${esc(e.reps)}" aria-label="Repetições" />
-    <input name="ex-carga" value="${esc(e.carga)}" placeholder="kg" aria-label="Carga" />
+  row.innerHTML = `<input name="ex-nome" placeholder="Nome do exercício" value="${esc(e.nome)}" aria-label="Exercício" required />
+    <input name="ex-series" type="number" min="1" max="20" value="${esc(e.series)}" placeholder="Séries" aria-label="Quantidade de séries" required />
+    <input name="ex-reps" value="${esc(e.reps)}" placeholder="Ex: 10-12" aria-label="Meta de repetições" required />
     <button type="button" class="icon-btn" data-action="del-ex-row" aria-label="Remover exercício">${ICON.trash}</button>`;
   $('#ex-rows').appendChild(row);
   if (!e.nome) row.querySelector('input').focus();
@@ -889,7 +1271,6 @@ const FORMS = {
       return;
     }
 
-    // 1. Se a nuvem Firebase estiver ativa, autentica na nuvem primeiro
     if (cloud.enabled && cloud.auth) {
       try {
         const { signInWithEmailAndPassword } = cloud.fbModules.authMod;
@@ -903,7 +1284,6 @@ const FORMS = {
         return;
       } catch (err) {
         const code = err?.code || '';
-        // Se o provedor Email/Senha ainda não foi ativado no painel do Firebase, tenta conta local/Firestore
         if (code === 'auth/configuration-not-found' || code === 'auth/operation-not-allowed') {
           const remoteState = await pullFromCloud(email);
           const accs = loadAccounts();
@@ -919,7 +1299,6 @@ const FORMS = {
       }
     }
 
-    // 2. Autenticação local no aparelho
     const accs = loadAccounts();
     const acc = accs[email];
     if (!acc || acc.senha !== senha) {
@@ -985,7 +1364,6 @@ const FORMS = {
     };
     newState.measures = [{ id: uid(), data: dkey(), peso }];
 
-    // 1. Se a nuvem Firebase estiver ativa, cria a conta no Firebase Auth + Firestore
     if (cloud.enabled && cloud.auth) {
       try {
         const { createUserWithEmailAndPassword } = cloud.fbModules.authMod;
@@ -996,7 +1374,6 @@ const FORMS = {
           errEl.textContent = 'Esse Gmail já possui conta cadastrada. Vá em "Entrar".';
           return;
         }
-        // Se o provedor Email/Senha ainda não foi ativado no console do Firebase, não bloqueia o cadastro
         if (code !== 'auth/configuration-not-found' && code !== 'auth/operation-not-allowed') {
           errEl.textContent = 'Erro ao criar conta na nuvem: ' + (err.message || code);
           return;
@@ -1018,6 +1395,63 @@ const FORMS = {
     toast(`Conta criada! Bem-vindo, ${nome.split(' ')[0]} 🎉`);
   },
 
+  'exec-workout': f => {
+    if (!activeExecution) return;
+    const w = S.workouts.find(x => x.id === activeExecution.workoutId);
+    if (!w) return;
+    const min = +f.min.value || 60;
+    const tipo = f.tipo.value || 'musculacao';
+
+    const detalhes = w.exercicios.map((ex, exIdx) => {
+      const count = (activeExecution.sets[exIdx] || []).length;
+      const series = [];
+      for (let sIdx = 0; sIdx < count; sIdx++) {
+        const reps = f[`reps-${exIdx}-${sIdx}`]?.value?.trim() || String(ex.reps);
+        const carga = f[`carga-${exIdx}-${sIdx}`]?.value?.trim().replace(/kg/i, '') || '0';
+        series.push({ serie: sIdx + 1, reps, carga });
+      }
+      // Atualiza a última carga usada como referência no exercício do treino
+      const lastCarga = series[series.length - 1]?.carga;
+      if (lastCarga && lastCarga !== '0') ex.carga = lastCarga;
+      return { nome: ex.nome, series };
+    });
+
+    const before = score().total;
+    today().sessions.push({
+      id: uid(),
+      workoutId: w.id,
+      nome: w.nome,
+      tipo,
+      min,
+      kcal: sessionKcal(tipo, min),
+      hora: timeNow(),
+      detalhes,
+    });
+    S.lastWorkoutAt = Date.now();
+    activeExecution = null;
+    const gained = score().total - before;
+    commit(gained > 0 ? `Treino finalizado! +${gained} pontos 🔥` : 'Treino salvo com todas as séries! 💪');
+  },
+
+  'notif-settings': f => {
+    S.notifications.waterIntervalMin = +f.waterIntervalMin.value || 90;
+    commit('Configurações de lembretes salvas 🔔');
+  },
+
+  'missed-workout': f => {
+    const motivo = f.motivo.value;
+    const nota = f.nota.value.trim();
+    S.missedReasons = S.missedReasons || [];
+    S.missedReasons.push({ id: uid(), data: dkey(), hora: timeNow(), motivo, nota });
+    $('#missed-workout-dialog').close();
+    if (motivo.includes('esqueci de registrar')) {
+      location.hash = '#treinos';
+      toast('Abra seu treino abaixo e registre suas séries!');
+    } else {
+      commit('Justificativa registrada. Amanhã voltamos com tudo! 💪');
+    }
+  },
+
   cloud: async f => {
     const cfg = parseFirebaseConfigInput(f.config.value);
     if (!cfg) {
@@ -1035,7 +1469,6 @@ const FORMS = {
     }
   },
 
-  session: f => addSession(f.workout.value, f.tipo.value, +f.min.value),
   meal: f => {
     const before = score().total;
     today().meals.push({ id: uid(), tipo: f.tipo.value, nome: f.nome.value.trim(), kcal: +f.kcal.value, prot: +f.prot.value || 0, hora: timeNow() });
@@ -1076,9 +1509,9 @@ const FORMS = {
   workout: f => {
     const exercicios = $$('.ex-row', f).map(r => ({
       nome: r.querySelector('[name="ex-nome"]').value.trim(),
-      series: +r.querySelector('[name="ex-series"]').value || 1,
-      reps: r.querySelector('[name="ex-reps"]').value.trim(),
-      carga: r.querySelector('[name="ex-carga"]').value.trim(),
+      series: Math.max(1, +r.querySelector('[name="ex-series"]').value || 1),
+      reps: r.querySelector('[name="ex-reps"]').value.trim() || '10',
+      carga: '',
     })).filter(e => e.nome);
     const data = { nome: f.nome.value.trim(), foco: f.foco.value.trim(), exercicios };
     const existing = S.workouts.find(x => x.id === f.wid.value);
@@ -1108,20 +1541,24 @@ document.addEventListener('input', e => {
     const food = FOODS.find(f => f[0] === e.target.value);
     if (food) { $('#meal-kcal').value = food[1]; $('#meal-prot').value = food[2]; }
   }
-  if (e.target.id === 'session-workout') $('#session-tipo').value = e.target.value ? 'musculacao' : 'caminhada';
-
-  // Mostra a idade calculada em tempo real no cadastro
   if (['reg-dia', 'reg-mes', 'reg-ano'].includes(e.target.id)) {
     const age = calcAgeFromDOB($('#reg-dia')?.value, $('#reg-mes')?.value, $('#reg-ano')?.value);
     const preview = $('#reg-age-preview');
     if (preview) preview.textContent = age != null ? `— ${age} anos` : '';
+  }
+  if (activeExecution && (e.target.id === 'exec-min' || e.target.id === 'exec-tipo')) {
+    activeExecution.min = +($('#exec-min')?.value || 60);
+    activeExecution.tipo = $('#exec-tipo')?.value || 'musculacao';
   }
 });
 
 window.addEventListener('hashchange', go);
 
 let lastDay = dkey();
-setInterval(() => { if (dkey() !== lastDay) { lastDay = dkey(); if (currentUserEmail) render(); } }, 60000);
+setInterval(() => {
+  if (dkey() !== lastDay) { lastDay = dkey(); if (currentUserEmail) render(); }
+  checkPeriodicNotifications();
+}, 60000);
 
 /* ---------- Inicialização ---------- */
 (async function bootstrap() {

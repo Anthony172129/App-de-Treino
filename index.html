@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#121418" />
   <meta name="description" content="Pulso — app de treino com metas diárias, pontuação, sequência de treinos, controle de calorias, água e medidas corporais." />
   <title>Pulso · Treino, Calorias, Água e Medidas</title>
@@ -45,7 +45,7 @@
           <span>Nome completo *</span>
           <input name="nome" id="reg-nome" type="text" required placeholder="Ex.: Anthony Silva" autocomplete="name" />
         </label>
-        <div class="row">
+        <div class="row-2">
           <label class="field">
             <span>Seu Gmail *</span>
             <input name="email" id="reg-email" type="email" required placeholder="seuemail@gmail.com" autocomplete="email" />
@@ -59,38 +59,38 @@
         <div class="field">
           <span>Data de nascimento * <small class="age-preview" id="reg-age-preview"></small></span>
           <div class="dob-row">
-            <input name="dia" id="reg-dia" type="number" min="1" max="31" required placeholder="Dia (DD)" aria-label="Dia de nascimento" />
+            <input name="dia" id="reg-dia" type="number" min="1" max="31" required placeholder="Dia" aria-label="Dia de nascimento" />
             <select name="mes" id="reg-mes" required aria-label="Mês de nascimento">
               <option value="">Mês</option>
-              <option value="1">01 · Janeiro</option>
-              <option value="2">02 · Fevereiro</option>
-              <option value="3">03 · Março</option>
-              <option value="4">04 · Abril</option>
-              <option value="5">05 · Maio</option>
-              <option value="6">06 · Junho</option>
-              <option value="7">07 · Julho</option>
-              <option value="8">08 · Agosto</option>
-              <option value="9">09 · Setembro</option>
-              <option value="10">10 · Outubro</option>
-              <option value="11">11 · Novembro</option>
-              <option value="12">12 · Dezembro</option>
+              <option value="1">01 · Jan</option>
+              <option value="2">02 · Fev</option>
+              <option value="3">03 · Mar</option>
+              <option value="4">04 · Abr</option>
+              <option value="5">05 · Mai</option>
+              <option value="6">06 · Jun</option>
+              <option value="7">07 · Jul</option>
+              <option value="8">08 · Ago</option>
+              <option value="9">09 · Set</option>
+              <option value="10">10 · Out</option>
+              <option value="11">11 · Nov</option>
+              <option value="12">12 · Dez</option>
             </select>
-            <input name="ano" id="reg-ano" type="number" min="1920" max="2020" required placeholder="Ano (AAAA)" aria-label="Ano de nascimento" />
+            <input name="ano" id="reg-ano" type="number" min="1920" max="2020" required placeholder="Ano" aria-label="Ano de nascimento" />
           </div>
         </div>
 
-        <div class="row">
+        <div class="row-2">
           <label class="field">
-            <span>Peso obrigatório (kg) *</span>
+            <span>Peso (kg) *</span>
             <input name="peso" id="reg-peso" type="number" step="0.1" min="25" max="300" required placeholder="Ex.: 75.5" />
           </label>
           <label class="field">
-            <span>Altura obrigatória (m) *</span>
+            <span>Altura (m) *</span>
             <input name="altura_m" id="reg-altura" type="number" step="0.01" min="1.00" max="2.50" required placeholder="Ex.: 1.75" />
           </label>
         </div>
 
-        <div class="row">
+        <div class="row-2">
           <label class="field">
             <span>Sexo</span>
             <select name="sexo" id="reg-sexo">
@@ -114,7 +114,7 @@
 
       <div class="auth-foot">
         <button type="button" class="btn ghost small" id="open-cloud-config" data-action="open-cloud-dialog">
-          ☁️ Configurar Nuvem (Firebase) para usar em vários celulares
+          ☁️ Configurar Nuvem (Firebase)
         </button>
       </div>
     </div>
@@ -155,6 +155,9 @@
         </div>
       </header>
 
+      <!-- Banner de Cobrança / Notificações Ativas -->
+      <div id="alert-banners" class="alert-banners"></div>
+
       <section class="screen" id="screen-inicio" data-screen="inicio"></section>
       <section class="screen" id="screen-treinos" data-screen="treinos"></section>
       <section class="screen" id="screen-calorias" data-screen="calorias"></section>
@@ -163,19 +166,47 @@
     </main>
   </div>
 
-  <!-- Diálogo de Treino -->
+  <!-- Diálogo para Criar/Editar Ficha de Treino -->
   <dialog id="workout-dialog" class="dialog">
     <form id="workout-form" method="dialog" data-form="workout">
       <h2 id="workout-dialog-title">Novo treino</h2>
+      <p class="sub" style="margin-bottom:8px">Defina os exercícios, a quantidade de séries e a meta de repetições.</p>
       <input type="hidden" name="wid" />
       <label class="field"><span>Nome do treino</span><input name="nome" id="wf-nome" required placeholder="Ex.: Treino A" /></label>
-      <label class="field"><span>Foco</span><input name="foco" id="wf-foco" placeholder="Ex.: Peito e tríceps" /></label>
-      <div class="ex-head"><span>Exercício</span><span>Séries</span><span>Reps</span><span>Carga</span><span></span></div>
+      <label class="field"><span>Foco / Grupo muscular</span><input name="foco" id="wf-foco" placeholder="Ex.: Peito e tríceps" /></label>
+      <div class="ex-head"><span>Exercício</span><span>Qtd. Séries</span><span>Meta Reps</span><span></span></div>
       <div id="ex-rows" class="ex-rows"></div>
-      <button type="button" class="btn ghost small" id="add-ex-row" data-action="add-ex-row">+ Exercício</button>
+      <button type="button" class="btn ghost small" id="add-ex-row" data-action="add-ex-row">+ Adicionar exercício</button>
       <div class="dialog-actions">
         <button type="button" class="btn ghost" id="workout-cancel" data-action="close-dialog">Cancelar</button>
         <button type="submit" class="btn primary" id="workout-save">Salvar treino</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Diálogo de Questionamento de Falta (24h após último treino) -->
+  <dialog id="missed-workout-dialog" class="dialog">
+    <form id="missed-workout-form" method="dialog" data-form="missed-workout">
+      <h2>⚠️ Mais de 24h sem treinar!</h2>
+      <p class="sub" id="missed-workout-sub">Notamos que já se passaram mais de 24 horas desde o seu último treino. Por que você faltou?</p>
+      <label class="field">
+        <span>Motivo da ausência</span>
+        <select name="motivo" id="missed-motivo">
+          <option value="Falta de tempo / rotina corrida">Falta de tempo / rotina corrida</option>
+          <option value="Cansaço ou dor muscular">Cansaço ou dor muscular</option>
+          <option value="Acabei esquecendo de registrar">Eu treinei! Só esqueci de registrar</option>
+          <option value="Indisposição / saúde">Indisposição / saúde</option>
+          <option value="Desânimo / preguiça">Desânimo / preguiça</option>
+          <option value="Outro motivo">Outro motivo</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Observação (opcional)</span>
+        <input name="nota" id="missed-nota" placeholder="Anote o que aconteceu..." />
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn primary" data-action="go-train-now">Ir treinar agora 💪</button>
+        <button type="submit" class="btn ghost">Registrar justificativa</button>
       </div>
     </form>
   </dialog>
@@ -185,10 +216,10 @@
     <form id="cloud-form" method="dialog" data-form="cloud">
       <h2>☁️ Sincronização na Nuvem (Firebase)</h2>
       <p class="sub" style="margin-bottom:12px">
-        Cole abaixo o bloco <code>firebaseConfig</code> do seu projeto gratuito no Firebase para sincronizar contas entre celulares diferentes.
+        Cole abaixo o bloco <code>firebaseConfig</code> do seu projeto no Firebase para sincronizar contas entre celulares.
       </p>
       <label class="field">
-        <span>Configuração do Firebase (JSON ou código copiado do Firebase)</span>
+        <span>Configuração do Firebase</span>
         <textarea name="config" id="cloud-config-input" rows="7" placeholder='{
   "apiKey": "AIza...",
   "authDomain": "seu-app.firebaseapp.com",
