@@ -1,0 +1,40 @@
+name: Web Push Notifications (Água, Alimentação e Treino)
+
+on:
+  # Roda automaticamente de hora em hora (entre 8h e 22h no horário de Brasília)
+  schedule:
+    - cron: '0 11-23,0-1 * * *'
+  # Permite disparar manualmente pelo botão "Run workflow" na aba Actions do GitHub
+  workflow_dispatch:
+    inputs:
+      force_test:
+        description: 'Enviar notificação de teste imediata para todos os celulares inscritos?'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  send-web-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar biblioteca web-push
+        run: npm install --no-save web-push
+
+      - name: Verificar Firestore e disparar Web Push (VAPID)
+        env:
+          FIREBASE_PROJECT_ID: 'pulso-61be3'
+          VAPID_PUBLIC_KEY: 'BNsRjJvsT-9CCBTZSWEdQ6WgavTeJ8Efwz9vUt2F0Rqx0fPTNbfBsm5fVGmbooYKukQJmDot6jUmWoSkwp08lYw'
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          FORCE_TEST: ${{ github.event.inputs.force_test || 'false' }}
+        run: node scripts/send-push.js

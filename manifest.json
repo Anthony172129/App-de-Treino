@@ -1,0 +1,19 @@
+{
+  "name": "Pulso · Treino, Calorias, Água e Medidas",
+  "short_name": "Pulso",
+  "description": "Aplicativo de treino com metas diárias, sequência, controle de calorias, água e medidas corporais.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#121418",
+  "theme_color": "#121418",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2964/2964514.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -382,29 +382,100 @@ function bmiClass(v) {
   return ['Obesidade', 'c-food'];
 }
 
-/* ---------- Sistema de Notificações e Cobrança (Água, Alimentação e 24h Treino) ---------- */
-function sendBrowserNotification(title, body, tag) {
-  if ('Notification' in window && Notification.permission === 'granted') {
-    try {
-      new Notification(title, { body, tag, icon: 'https://cdn-icons-png.flaticon.com/512/2964/2964514.png' });
-    } catch (e) { /* fallback em mobile */ }
+/* ---------- Sistema de Web Push Notifications Reais (Service Worker + VAPID) ---------- */
+// Chave pública VAPID exclusiva do projeto Pulso (par da VAPID_PRIVATE_KEY no GitHub Actions):
+const VAPID_PUBLIC_KEY = 'BNsRjJvsT-9CCBTZSWEdQ6WgavTeJ8Efwz9vUt2F0Rqx0fPTNbfBsm5fVGmbooYKukQJmDot6jUmWoSkwp08lYw';
+
+let swRegistration = null;
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
   }
+  return outputArray;
+}
+
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return null;
+  try {
+    swRegistration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    return swRegistration;
+  } catch (e) {
+    console.warn('Falha ao registrar Service Worker:', e);
+    return null;
+  }
+}
+
+async function subscribeUserToWebPush() {
+  const reg = swRegistration || (await registerServiceWorker());
+  if (!reg || !('pushManager' in reg)) return null;
+
+  try {
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const subJson = sub.toJSON();
+    S.notifications.pushSubscription = subJson;
+    S.notifications.pushSubscribedAt = Date.now();
+    S.notifications.timezoneOffset = new Date().getTimezoneOffset();
+    save(); // Salva localmente e envia a subscription para o Firestore (usuarios_pulso)
+    return subJson;
+  } catch (err) {
+    console.warn('Não foi possível criar assinatura Web Push:', err);
+    return null;
+  }
+}
+
+async function sendBrowserNotification(title, body, tag, url = './index.html#inicio') {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const reg = swRegistration || (await registerServiceWorker());
+    if (reg && reg.showNotification) {
+      await reg.showNotification(title, {
+        body,
+        tag,
+        renotify: true,
+        vibrate: [200, 100, 200],
+        icon: 'https://cdn-icons-png.flaticon.com/512/2964/2964514.png',
+        badge: 'https://cdn-icons-png.flaticon.com/512/2964/2964514.png',
+        data: { url },
+      });
+      return;
+    }
+    new Notification(title, { body, tag, icon: 'https://cdn-icons-png.flaticon.com/512/2964/2964514.png' });
+  } catch (e) { /* fallback */ }
 }
 
 async function requestNotificationPermission() {
   if (!('Notification' in window)) {
-    toast('Seu navegador usa apenas alertas internos na tela.');
+    toast('Neste dispositivo, adicione o site à Tela de Início para ativar Web Push.');
     return;
   }
   const perm = await Notification.requestPermission();
   S.notifications.enabled = true;
-  save();
-  render();
   if (perm === 'granted') {
-    sendBrowserNotification('Pulso · Notificações ativadas!', 'Vamos te lembrar de beber água, se alimentar e não faltar ao treino.');
-    toast('🔔 Notificações ativadas no dispositivo!');
+    const sub = await subscribeUserToWebPush();
+    await sendBrowserNotification(
+      'Pulso · Web Push Ativado! 🔔',
+      sub
+        ? 'Pronto! Seu celular receberá notificações reais de Água, Alimentação e Treino (24h) mesmo com o navegador fechado.'
+        : 'Notificações do sistema ativadas para Água, Alimentação e Treino!',
+      'pulso-welcome'
+    );
+    render();
+    toast(sub ? '✅ Web Push (VAPID) conectado e salvo na nuvem!' : '🔔 Notificações ativadas!');
   } else {
-    toast('Alertas visuais ativados dentro do app!');
+    save();
+    render();
+    toast('Permissão negada no navegador. Libere nas configurações do site.');
   }
 }
 
@@ -1562,6 +1633,7 @@ setInterval(() => {
 
 /* ---------- Inicialização ---------- */
 (async function bootstrap() {
+  registerServiceWorker();
   await initCloud();
   const savedEmail = localStorage.getItem(SESSION_KEY);
   if (savedEmail) {
@@ -1571,6 +1643,9 @@ setInterval(() => {
       if (remote) state = remote;
     }
     enterAppWithUser(savedEmail, state);
+    if ('Notification' in window && Notification.permission === 'granted') {
+      subscribeUserToWebPush();
+    }
   } else {
     render();
   }
