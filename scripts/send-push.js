@@ -3,8 +3,10 @@
 /**
  * Disparador de Web Push Notifications (GitHub Actions -> Celular do Usuário)
  * Lê os usuários inscritos no Firestore (pulso-61be3 / coleção usuarios_pulso),
- * verifica Hidratação, Alimentação e Cobrança de 24h de Treino e envia
- * Web Push real criptografado com chaves VAPID mesmo com o navegador fechado.
+ * verifica o Timer exato de Hidratação (nextWaterRemindAt / waterIntervalMin),
+ * Alimentação e Cobrança de 24h de Treino e envia Web Push real criptografado
+ * com chaves VAPID mesmo com o app/navegador fechado, atualizando o próximo
+ * ciclo do timer no Firestore após o disparo.
  */
 
 const webpush = require('web-push');
@@ -40,6 +42,26 @@ function fromFirestoreValue(v) {
   return null;
 }
 
+// Converte objeto JS para formato REST do Firestore
+function toFirestoreValue(v) {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') {
+    if (Number.isInteger(v)) return { integerValue: String(v) };
+    return { doubleValue: v };
+  }
+  if (typeof v === 'string') return { stringValue: v };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(toFirestoreValue) } };
+  if (typeof v === 'object') {
+    const fields = {};
+    for (const k of Object.keys(v)) {
+      if (v[k] !== undefined) fields[k] = toFirestoreValue(v[k]);
+    }
+    return { mapValue: { fields } };
+  }
+  return { stringValue: String(v) };
+}
+
 // Data/hora atual no fuso horário do Brasil (America/Sao_Paulo)
 function getBrazilNow() {
   const now = new Date();
@@ -55,8 +77,9 @@ function getBrazilNow() {
   const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
   const dkey = `${map.year}-${map.month}-${map.day}`;
   const hour = Number(map.hour);
+  const minute = Number(map.minute);
   const brDate = new Date(`${dkey}T${map.hour}:${map.minute}:00-03:00`);
-  return { dkey, hour, dayOfWeek: brDate.getDay(), timestamp: now.getTime() };
+  return { dkey, hour, minute, dayOfWeek: brDate.getDay(), timestamp: now.getTime() };
 }
 
 function calcKcalGoal(p) {
@@ -85,15 +108,35 @@ async function fetchUsersFromFirestore() {
   const data = await res.json();
   return (data.documents || []).map(doc => {
     const fields = doc.fields || {};
-    const parsed = {};
+    const parsed = { _docName: doc.name };
     for (const k of Object.keys(fields)) parsed[k] = fromFirestoreValue(fields[k]);
     return parsed;
   });
 }
 
+async function updateUserNotificationsInFirestore(docName, state) {
+  if (!docName || !state) return;
+  const url = `https://firestore.googleapis.com/v1/${docName}?updateMask.fieldPaths=state.notifications&updateMask.fieldPaths=updatedAt`;
+  const body = {
+    fields: {
+      updatedAt: toFirestoreValue(Date.now()),
+      state: toFirestoreValue(state),
+    },
+  };
+  try {
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.warn('⚠️ Falha ao atualizar timer no Firestore:', err.message);
+  }
+}
+
 async function run() {
   const br = getBrazilNow();
-  console.log(`🕒 Verificando metas em ${br.dkey} às ${br.hour}h (Horário de Brasília)...`);
+  console.log(`🕒 Verificando timers e metas em ${br.dkey} às ${br.hour}:${String(br.minute).padStart(2, '0')} (Horário de Brasília)...`);
 
   const users = await fetchUsersFromFirestore();
   console.log(`👥 Total de contas encontradas no Firestore: ${users.length}`);
@@ -102,8 +145,10 @@ async function run() {
 
   for (const u of users) {
     const state = u.state;
-    const sub = state?.notifications?.pushSubscription;
+    const notif = state?.notifications || {};
+    const sub = notif.pushSubscription;
     if (!sub || !sub.endpoint) continue;
+    if (notif.enabled === false) continue;
 
     const nome = (state.profile?.nome || u.email || 'Atleta').split(' ')[0];
     const dayLog = (state.log && state.log[br.dkey]) || { water: [], meals: [], sessions: [] };
@@ -115,6 +160,7 @@ async function run() {
     const isTrainDay = (state.trainingDays || [1, 2, 3, 4, 5, 6]).includes(br.dayOfWeek);
 
     const messagesToSend = [];
+    let stateModified = false;
 
     // Modo de disparo de teste manual pelo botão Run Workflow do GitHub Actions
     if (FORCE_TEST) {
@@ -125,51 +171,83 @@ async function run() {
         url: './index.html#inicio',
       });
     } else {
-      // 1. Cobrança de 24h após o último treino
+      // 1. Cobrança de Hidratação exatamente quando o timer de água fechar (mesmo com o app fechado)
+      const intervalMin = Number(notif.waterIntervalMin) || 90;
+      const intervalMs = intervalMin * 60000;
+      const lastRemindAt = Number(notif.lastWaterRemindAt) || 0;
+      const nextDueAt = Number(notif.nextWaterRemindAt) || (lastRemindAt > 0 ? lastRemindAt + intervalMs : 0);
+
+      // Verifica se o timer de água já fechou (ou fecha dentro dos próximos 60 segundos)
+      const waterTimerClosed = nextDueAt > 0 ? (br.timestamp + 60000 >= nextDueAt) : (br.timestamp - lastRemindAt >= intervalMs);
+
+      if (drankMl < waterGoal && waterTimerClosed && (br.hour >= 7 && br.hour <= 23)) {
+        const falta = waterGoal - drankMl;
+        const dueAtExact = nextDueAt > br.timestamp ? nextDueAt : br.timestamp;
+        messagesToSend.push({
+          title: `💧 O timer de água fechou, ${nome}!`,
+          body: `Hora de beber água! Você registrou ${drankMl} ml de ${waterGoal} ml hoje (faltam ${falta} ml). Beba 250 ml agora!`,
+          tag: 'pulso-water-timer',
+          url: './index.html#agua',
+          dueAt: dueAtExact,
+        });
+        notif.lastWaterRemindAt = br.timestamp;
+        notif.nextWaterRemindAt = br.timestamp + intervalMs;
+        stateModified = true;
+      }
+
+      // 2. Cobrança de 24h após o último treino
       const lastW = Number(state.lastWorkoutAt) || 0;
       const hoursSinceWorkout = lastW ? (br.timestamp - lastW) / 3600000 : 0;
       const justifiedToday = (state.missedReasons || []).some(r => r.data === br.dkey);
+      const lastMissedPushAt = Number(notif.lastMissedPromptAt) || 0;
 
-      if (lastW > 0 && hoursSinceWorkout >= 24 && !trainedToday && isTrainDay && !justifiedToday && br.hour >= 9 && br.hour <= 22) {
+      if (
+        lastW > 0 &&
+        hoursSinceWorkout >= 24 &&
+        !trainedToday &&
+        isTrainDay &&
+        !justifiedToday &&
+        br.hour >= 9 &&
+        br.hour <= 22 &&
+        (br.timestamp - lastMissedPushAt >= 4 * 3600000)
+      ) {
         messagesToSend.push({
           title: `⚠️ ${nome}, faz ${Math.floor(hoursSinceWorkout)}h desde o último treino!`,
           body: 'Por que você ainda não treinou hoje? Toque para abrir seu treino e preencher suas séries ou justificar.',
           tag: 'pulso-workout-24h',
           url: './index.html#treinos',
         });
+        notif.lastMissedPromptAt = br.timestamp;
+        stateModified = true;
       }
 
-      // 2. Cobrança de Hidratação (entre 8h e 22h se ainda não bateu a meta de água do dia + treino)
-      if (br.hour >= 8 && br.hour <= 22 && drankMl < waterGoal) {
-        const falta = waterGoal - drankMl;
-        messagesToSend.push({
-          title: `💧 Hora de beber água, ${nome}!`,
-          body: `Você registrou ${drankMl} ml de ${waterGoal} ml hoje (faltam ${falta} ml). Beba um copo de 250 ml e registre agora!`,
-          tag: 'pulso-water',
-          url: './index.html#agua',
-        });
-      }
-
-      // 3. Cobrança de Alimentação (horários de refeição ou meta atrasada)
+      // 3. Cobrança de Alimentação (1x por faixa de horário de refeição)
       const meals = dayLog.meals || [];
       let mealMsg = null;
+      let mealSlot = null;
       if (br.hour >= 8 && br.hour < 11 && meals.length === 0) {
         mealMsg = 'Ainda não vimos seu Café da manhã hoje!';
+        mealSlot = `${br.dkey}-cafe`;
       } else if (br.hour >= 12 && br.hour < 15 && !meals.some(m => m.tipo === 'Almoço')) {
         mealMsg = 'Hora do Almoço! Não esqueça de se alimentar e registrar as calorias.';
+        mealSlot = `${br.dkey}-almoco`;
       } else if (br.hour >= 16 && br.hour < 18 && meals.length < 2) {
         mealMsg = 'Hora do Lanche da tarde! Registre o que você comeu.';
+        mealSlot = `${br.dkey}-lanche`;
       } else if (br.hour >= 19 && br.hour <= 22 && !meals.some(m => m.tipo === 'Jantar')) {
         mealMsg = 'Já jantou? Registre seu Jantar para fechar os pontos de alimentação do dia.';
+        mealSlot = `${br.dkey}-jantar`;
       }
 
-      if (mealMsg) {
+      if (mealMsg && mealSlot && notif.lastMealPushSlot !== mealSlot) {
         messagesToSend.push({
           title: `🍽️ Se alimente e registre, ${nome}!`,
           body: `${mealMsg} (${eatenKcal} de ${kcalGoal} kcal registradas hoje).`,
           tag: 'pulso-meal',
           url: './index.html#calorias',
         });
+        notif.lastMealPushSlot = mealSlot;
+        stateModified = true;
       }
     }
 
@@ -181,6 +259,10 @@ async function run() {
       } catch (err) {
         console.warn(`⚠️ Falha ao enviar Push para ${u.email}:`, err.statusCode || err.message);
       }
+    }
+
+    if (stateModified) {
+      await updateUserNotificationsInFirestore(u._docName, state);
     }
   }
 

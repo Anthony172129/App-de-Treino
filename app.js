@@ -36,9 +36,10 @@ const DEFAULT_STATE = {
   },
   notifications: {
     enabled: true,
-    waterIntervalMin: 90,   // Lembrete de água a cada 90 min
+    waterIntervalMin: 90,   // Lembrete de água a cada 90 min (editável)
     mealHours: [8, 12, 16, 20], // Horários de cobrança de refeição
     lastWaterRemindAt: 0,
+    nextWaterRemindAt: 0,   // Timestamp exato (ms) em que o timer de água fecha e dispara o Push
     lastMealRemindHour: -1,
     lastMissedPromptAt: 0,
   },
@@ -382,11 +383,12 @@ function bmiClass(v) {
   return ['Obesidade', 'c-food'];
 }
 
-/* ---------- Sistema de Web Push Notifications Reais (Service Worker + VAPID) ---------- */
+/* ---------- Sistema de Web Push Notifications Reais (Service Worker + VAPID + Timer Exato de Água) ---------- */
 // Chave pública VAPID exclusiva do projeto Pulso (par da VAPID_PRIVATE_KEY no GitHub Actions):
 const VAPID_PUBLIC_KEY = 'BNsRjJvsT-9CCBTZSWEdQ6WgavTeJ8Efwz9vUt2F0Rqx0fPTNbfBsm5fVGmbooYKukQJmDot6jUmWoSkwp08lYw';
 
 let swRegistration = null;
+let waterExactTimeout = null;
 
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -410,6 +412,118 @@ async function registerServiceWorker() {
   }
 }
 
+function getWaterIntervalMs() {
+  return (Number(S.notifications?.waterIntervalMin) || 90) * 60000;
+}
+
+function formatWaterCountdown(ms) {
+  if (ms <= 0) return '00:00 (disparando agora!)';
+  const totalSec = Math.ceil(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+// Agenda o disparo exato tanto no Service Worker (mesmo com o app fechado) quanto na aba aberta e sincroniza nextWaterRemindAt no Firestore
+async function scheduleExactWaterTimer(resetCycle = false) {
+  if (!currentUserEmail) return;
+  if (waterExactTimeout) {
+    clearTimeout(waterExactTimeout);
+    waterExactTimeout = null;
+  }
+
+  const k = dkey();
+  const drank = waterOf(k);
+  const goal = waterGoal(k);
+  const intervalMs = getWaterIntervalMs();
+  const now = Date.now();
+
+  if (!S.notifications?.enabled || drank >= goal) {
+    const reg = swRegistration || (await registerServiceWorker());
+    reg?.active?.postMessage({ type: 'CANCEL_WATER_TIMER' });
+    return;
+  }
+
+  if (resetCycle || !S.notifications.nextWaterRemindAt || S.notifications.nextWaterRemindAt <= now) {
+    S.notifications.lastWaterRemindAt = now;
+    S.notifications.nextWaterRemindAt = now + intervalMs;
+    save();
+  }
+
+  const dueAt = Number(S.notifications.nextWaterRemindAt);
+  const delayMs = Math.max(0, dueAt - now);
+  const falta = Math.max(0, goal - drank);
+  const nome = (S.profile?.nome || currentUserEmail || 'Atleta').split(' ')[0];
+
+  const payload = {
+    enabled: true,
+    dueAt,
+    intervalMs,
+    title: `💧 O timer de água fechou, ${nome}!`,
+    body: `Hora de beber água! Você bebeu ${fmt(drank)} ml de ${fmt(goal)} ml hoje (faltam ${fmt(falta)} ml). Beba 250 ml agora!`,
+    tag: 'pulso-water-timer',
+    url: './index.html#agua',
+  };
+
+  // Envia o timestamp exato ao Service Worker para disparar mesmo se o usuário minimizar ou fechar o app
+  try {
+    const reg = swRegistration || (await registerServiceWorker());
+    const sw = reg?.active || navigator.serviceWorker?.controller;
+    if (sw) {
+      sw.postMessage({ type: 'SCHEDULE_WATER_TIMER', payload });
+    }
+  } catch (e) { /* ignora */ }
+
+  // Agenda também um timeout exato na janela ativa caso o app continue aberto
+  waterExactTimeout = setTimeout(() => {
+    onWaterTimerClosed();
+  }, delayMs);
+}
+
+function onWaterTimerClosed() {
+  if (!currentUserEmail || !S.notifications?.enabled) return;
+  const k = dkey();
+  const drank = waterOf(k);
+  const goal = waterGoal(k);
+  if (drank >= goal) return;
+
+  const now = Date.now();
+  const intervalMs = getWaterIntervalMs();
+  // Só dispara na janela se o Service Worker ainda não tiver acabado de disparar nos últimos 3 segundos
+  if (now - (S.notifications.lastWaterFiredAt || 0) > 3000) {
+    S.notifications.lastWaterFiredAt = now;
+    const falta = Math.max(0, goal - drank);
+    const nome = (S.profile?.nome || currentUserEmail || 'Atleta').split(' ')[0];
+    sendBrowserNotification(
+      `💧 O timer de água fechou, ${nome}!`,
+      `Hora de beber água! Você bebeu ${fmt(drank)} ml de ${fmt(goal)} ml hoje (faltam ${fmt(falta)} ml). Beba 250 ml agora!`,
+      'pulso-water-timer',
+      './index.html#agua'
+    );
+  }
+  S.notifications.lastWaterRemindAt = now;
+  S.notifications.nextWaterRemindAt = now + intervalMs;
+  save();
+  scheduleExactWaterTimer(false);
+  renderAlertBanners();
+}
+
+// Escuta aviso do Service Worker quando o timer de água disparar em segundo plano
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', event => {
+    if (event.data?.type === 'WATER_TIMER_FIRED' && currentUserEmail) {
+      const now = Date.now();
+      S.notifications.lastWaterFiredAt = now;
+      S.notifications.lastWaterRemindAt = now;
+      S.notifications.nextWaterRemindAt = now + getWaterIntervalMs();
+      save();
+      scheduleExactWaterTimer(false);
+      renderAlertBanners();
+    }
+  });
+}
+
 async function subscribeUserToWebPush() {
   const reg = swRegistration || (await registerServiceWorker());
   if (!reg || !('pushManager' in reg)) return null;
@@ -426,7 +540,12 @@ async function subscribeUserToWebPush() {
     S.notifications.pushSubscription = subJson;
     S.notifications.pushSubscribedAt = Date.now();
     S.notifications.timezoneOffset = new Date().getTimezoneOffset();
-    save(); // Salva localmente e envia a subscription para o Firestore (usuarios_pulso)
+    if (!S.notifications.nextWaterRemindAt || S.notifications.nextWaterRemindAt <= Date.now()) {
+      S.notifications.lastWaterRemindAt = Date.now();
+      S.notifications.nextWaterRemindAt = Date.now() + getWaterIntervalMs();
+    }
+    save(); // Salva localmente e envia a subscription + nextWaterRemindAt para o Firestore (usuarios_pulso)
+    scheduleExactWaterTimer(false);
     return subJson;
   } catch (err) {
     console.warn('Não foi possível criar assinatura Web Push:', err);
@@ -463,15 +582,16 @@ async function requestNotificationPermission() {
   S.notifications.enabled = true;
   if (perm === 'granted') {
     const sub = await subscribeUserToWebPush();
+    scheduleExactWaterTimer(true);
     await sendBrowserNotification(
       'Pulso · Web Push Ativado! 🔔',
       sub
-        ? 'Pronto! Seu celular receberá notificações reais de Água, Alimentação e Treino (24h) mesmo com o navegador fechado.'
+        ? `Timer de água iniciado (${S.notifications.waterIntervalMin || 90} min)! Você será notificado exatamente quando o timer fechar, mesmo com o app fechado.`
         : 'Notificações do sistema ativadas para Água, Alimentação e Treino!',
       'pulso-welcome'
     );
     render();
-    toast(sub ? '✅ Web Push (VAPID) conectado e salvo na nuvem!' : '🔔 Notificações ativadas!');
+    toast(sub ? '✅ Web Push (VAPID) + Timer de Água ativados!' : '🔔 Notificações ativadas!');
   } else {
     save();
     render();
@@ -578,17 +698,13 @@ function checkPeriodicNotifications() {
     }
   }
 
-  // 2. Notificação periódica de Água
-  const intervalMs = (S.notifications.waterIntervalMin || 90) * 60000;
-  if (hour >= 8 && hour <= 22 && waterOf(k) < waterGoal(k)) {
-    if (now - (S.notifications.lastWaterRemindAt || 0) >= intervalMs) {
-      S.notifications.lastWaterRemindAt = now;
-      save();
-      sendBrowserNotification(
-        '💧 Beba água e registre no Pulso!',
-        `Você bebeu ${fmt(waterOf(k))} ml de ${fmt(waterGoal(k))} ml hoje. Tome um copo de 250 ml agora!`,
-        'pulso-water'
-      );
+  // 2. Verifica se o timer exato de Água fechou (inclusive se o celular ficou em sleep/background)
+  if (waterOf(k) < waterGoal(k)) {
+    const dueAt = Number(S.notifications.nextWaterRemindAt) || 0;
+    if (!dueAt) {
+      scheduleExactWaterTimer(true);
+    } else if (now >= dueAt) {
+      onWaterTimerClosed();
     }
   }
 
@@ -688,8 +804,8 @@ function renderInicio() {
   <div class="card">
     <div class="card-head">
       <div>
-        <h2>🔔 Lembretes & Cobrança Automática</h2>
-        <p class="sub" style="margin-bottom:6px">Notificações de "Beba água", "Se alimente" e alerta de 24h após o último treino caso você falte.</p>
+        <h2>🔔 Lembretes & Timer de Água (Web Push)</h2>
+        <p class="sub" style="margin-bottom:6px">A notificação Web Push dispara exatamente quando o timer de água fechar (mesmo com o app fechado), além de cobrar refeições e 24h sem treino.</p>
       </div>
       <button class="btn ${notifPerm === 'granted' ? 'ghost' : 'primary'} small" data-action="enable-notifications">
         ${notifPerm === 'granted' ? '✅ Notificações Ativas (Testar)' : '🔔 Ativar notificações no celular'}
@@ -698,18 +814,18 @@ function renderInicio() {
     <form class="form" data-form="notif-settings" style="margin-top:8px">
       <div class="row-2">
         <label class="field">
-          <span>Lembrar de beber água a cada:</span>
+          <span>Timer de água (disparar push a cada):</span>
           <select name="waterIntervalMin">
-            ${[[60, '60 minutos (1h)'], [90, '90 minutos (1h30)'], [120, '120 minutos (2h)']].map(([v, l]) => `<option value="${v}" ${+S.notifications.waterIntervalMin === v ? 'selected' : ''}>${l}</option>`).join('')}
+            ${[[1, '1 minuto (Teste rápido)'], [15, '15 minutos (Durante treino)'], [30, '30 minutos'], [45, '45 minutos'], [60, '60 minutos (1h)'], [90, '90 minutos (1h30)'], [120, '120 minutos (2h)']].map(([v, l]) => `<option value="${v}" ${+S.notifications.waterIntervalMin === v ? 'selected' : ''}>${l}</option>`).join('')}
           </select>
         </label>
         <label class="field">
-          <span>Cobrança de falta (24h após último treino)</span>
-          <input value="Ativada automaticamente" disabled />
+          <span>Próximo disparo de água em:</span>
+          <input id="water-timer-countdown" value="${waterOf(k) >= waterGoal(k) ? 'Meta de água concluída hoje! ✅' : formatWaterCountdown((S.notifications.nextWaterRemindAt || (Date.now() + getWaterIntervalMs())) - Date.now())}" disabled />
         </label>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button type="submit" class="btn ghost small">Salvar intervalo</button>
+        <button type="submit" class="btn water small">⏱️ Salvar e reiniciar timer de água</button>
         <button type="button" class="btn ghost small" data-action="open-missed-dialog">Simular cobrança de 24h sem treino</button>
       </div>
     </form>
@@ -1148,6 +1264,7 @@ function enterAppWithUser(email, stateData) {
   $('#auth-gate').style.display = 'none';
   $('#app-shell').style.display = '';
   render(true);
+  scheduleExactWaterTimer(false);
   checkPeriodicNotifications();
 }
 
@@ -1277,15 +1394,17 @@ const ACTIONS = {
     const before = score().total;
     today().water.push({ id: uid(), ml: +id, hora: timeNow(), duranteTreino: false });
     const gained = score().total - before;
-    commit(`+${id} ml de água${gained > 0 ? ` · +${gained} pts` : ''}`);
+    scheduleExactWaterTimer(true);
+    commit(`+${id} ml de água${gained > 0 ? ` · +${gained} pts` : ''} · Timer reiniciado`);
   },
   'add-workout-water': id => {
     const before = score().total;
     today().water.push({ id: uid(), ml: +id, hora: timeNow(), duranteTreino: true });
     const gained = score().total - before;
+    scheduleExactWaterTimer(true);
     commit(`💦 +${id} ml hidratado no treino!${gained > 0 ? ` · +${gained} pts` : ''}`);
   },
-  'del-water': id => { today().water = today().water.filter(x => x.id !== id); commit('Registro removido'); },
+  'del-water': id => { today().water = today().water.filter(x => x.id !== id); scheduleExactWaterTimer(false); commit('Registro removido'); },
   'del-meal': id => { today().meals = today().meals.filter(x => x.id !== id); commit('Alimento removido'); },
   'del-session': id => { today().sessions = today().sessions.filter(x => x.id !== id); commit('Treino removido'); },
   'del-measure': id => { S.measures = S.measures.filter(x => x.id !== id); commit('Medida removida'); },
@@ -1506,7 +1625,8 @@ const FORMS = {
 
   'notif-settings': f => {
     S.notifications.waterIntervalMin = +f.waterIntervalMin.value || 90;
-    commit('Configurações de lembretes salvas 🔔');
+    scheduleExactWaterTimer(true);
+    commit(`⏱️ Timer de água iniciado (${S.notifications.waterIntervalMin} min)!`);
   },
 
   'missed-workout': f => {
@@ -1625,15 +1745,31 @@ document.addEventListener('input', e => {
 
 window.addEventListener('hashchange', go);
 
+// Quando o usuário volta ao app (visibilitychange), verifica imediatamente se o timer de água já fechou
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && currentUserEmail) {
+    checkPeriodicNotifications();
+  }
+});
+
 let lastDay = dkey();
 setInterval(() => {
   if (dkey() !== lastDay) { lastDay = dkey(); if (currentUserEmail) render(); }
-  checkPeriodicNotifications();
-}, 60000);
+  if (currentUserEmail) {
+    const cd = $('#water-timer-countdown');
+    if (cd) {
+      const k = dkey();
+      cd.value = waterOf(k) >= waterGoal(k)
+        ? 'Meta de água concluída hoje! ✅'
+        : formatWaterCountdown((S.notifications.nextWaterRemindAt || (Date.now() + getWaterIntervalMs())) - Date.now());
+    }
+    checkPeriodicNotifications();
+  }
+}, 1000);
 
 /* ---------- Inicialização ---------- */
 (async function bootstrap() {
-  registerServiceWorker();
+  await registerServiceWorker();
   await initCloud();
   const savedEmail = localStorage.getItem(SESSION_KEY);
   if (savedEmail) {
