@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Disparador de Web Push Notifications (GitHub Actions -> Celular do Usuário via Supabase)
+ * Disparador de Web Push Notifications (GitHub Actions -> Barra de Notificações do Celular via Supabase)
  * Lê os usuários inscritos nas tabelas do Supabase (`profiles`, `hydration_logs`, `nutrition_logs`, `workout_sessions`),
  * verifica o Timer exato de Hidratação (nextWaterRemindAt / waterIntervalMin),
  * Alimentação e Cobrança de 24h de Treino e envia Web Push real criptografado
@@ -28,11 +28,11 @@ const SUPABASE_KEY =
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BNsRjJvsT-9CCBTZSWEdQ6WgavTeJ8Efwz9vUt2F0Rqx0fPTNbfBsm5fVGmbooYKukQJmDot6jUmWoSkwp08lYw';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
-const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:anthony172129@gmail.com';
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:anthonysantoslima788@gmail.com';
 const FORCE_TEST = process.env.FORCE_TEST === 'true';
 
 if (!VAPID_PRIVATE_KEY) {
-  console.error('❌ Erro: O secret VAPID_PRIVATE_KEY não está configurado nos Secrets do GitHub.');
+  console.error('Erro: O secret VAPID_PRIVATE_KEY não está configurado nos Secrets do GitHub.');
   process.exit(1);
 }
 
@@ -42,7 +42,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false },
 });
 
-// Data/hora atual no fuso horário do Brasil (America/Sao_Paulo)
 function getBrazilNow() {
   const now = new Date();
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -80,14 +79,14 @@ function calcWaterGoal(p, sessions) {
 
 async function run() {
   const br = getBrazilNow();
-  console.log(`🕒 Verificando timers e metas no Supabase em ${br.dkey} às ${br.hour}:${String(br.minute).padStart(2, '0')} (Horário de Brasília)...`);
+  console.log(`Verificando timers e metas no Supabase em ${br.dkey} às ${br.hour}:${String(br.minute).padStart(2, '0')} (Horário de Brasília)...`);
 
   const { data: profiles, error: profErr } = await supabase.from('profiles').select('*');
   if (profErr) {
     throw new Error(`Falha ao consultar tabela profiles no Supabase: ${profErr.message}`);
   }
 
-  console.log(`👥 Total de perfis encontrados no Supabase: ${(profiles || []).length}`);
+  console.log(`Total de perfis encontrados no Supabase: ${(profiles || []).length}`);
 
   let sentCount = 0;
 
@@ -120,8 +119,8 @@ async function run() {
 
     if (FORCE_TEST) {
       messagesToSend.push({
-        title: `🔔 Teste Web Push (Supabase) · Olá, ${nome}!`,
-        body: `Suas notificações reais de Água (${drankMl}/${waterGoal} ml), Alimentação (${eatenKcal}/${kcalGoal} kcal) e Treino estão funcionando!`,
+        title: `Teste Web Push (Supabase) · Olá, ${nome}`,
+        body: `Suas notificações reais de Água (${drankMl}/${waterGoal} ml), Alimentação (${eatenKcal}/${kcalGoal} kcal) e Treino estão funcionando.`,
         tag: 'pulso-test',
         url: './index.html#/app/inicio',
       });
@@ -138,8 +137,8 @@ async function run() {
         const falta = waterGoal - drankMl;
         const dueAtExact = nextDueAt > br.timestamp ? nextDueAt : br.timestamp;
         messagesToSend.push({
-          title: `💧 O timer de água fechou, ${nome}!`,
-          body: `Hora de beber água! Você registrou ${drankMl} ml de ${waterGoal} ml hoje (faltam ${falta} ml). Beba 250 ml agora!`,
+          title: `O timer de água fechou, ${nome}`,
+          body: `Hora de beber água. Você registrou ${drankMl} ml de ${waterGoal} ml hoje (faltam ${falta} ml). Beba 250 ml agora.`,
           tag: 'pulso-water-timer',
           url: './index.html#/app/agua',
           dueAt: dueAtExact,
@@ -166,7 +165,7 @@ async function run() {
         (br.timestamp - lastMissedPushAt >= 4 * 3600000)
       ) {
         messagesToSend.push({
-          title: `⚠️ ${nome}, faz ${Math.floor(hoursSinceWorkout)}h desde o último treino!`,
+          title: `${nome}, faz ${Math.floor(hoursSinceWorkout)}h desde o último treino`,
           body: 'Por que você ainda não treinou hoje? Toque para abrir seu treino e preencher suas séries ou justificar.',
           tag: 'pulso-workout-24h',
           url: './index.html#/app/treinos',
@@ -179,13 +178,13 @@ async function run() {
       let mealMsg = null;
       let mealSlot = null;
       if (br.hour >= 8 && br.hour < 11 && mealRows.length === 0) {
-        mealMsg = 'Ainda não vimos seu Café da manhã hoje!';
+        mealMsg = 'Ainda não vimos seu Café da manhã hoje.';
         mealSlot = `${br.dkey}-cafe`;
       } else if (br.hour >= 12 && br.hour < 15 && !mealRows.some(m => m.tipo === 'Almoço')) {
-        mealMsg = 'Hora do Almoço! Não esqueça de se alimentar e registrar as calorias.';
+        mealMsg = 'Hora do Almoço. Não esqueça de se alimentar e registrar as calorias.';
         mealSlot = `${br.dkey}-almoco`;
       } else if (br.hour >= 16 && br.hour < 18 && mealRows.length < 2) {
-        mealMsg = 'Hora do Lanche da tarde! Registre o que você comeu.';
+        mealMsg = 'Hora do Lanche da tarde. Registre o que você comeu.';
         mealSlot = `${br.dkey}-lanche`;
       } else if (br.hour >= 19 && br.hour <= 22 && !mealRows.some(m => m.tipo === 'Jantar')) {
         mealMsg = 'Já jantou? Registre seu Jantar para fechar os pontos de alimentação do dia.';
@@ -194,7 +193,7 @@ async function run() {
 
       if (mealMsg && mealSlot && notif.lastMealPushSlot !== mealSlot) {
         messagesToSend.push({
-          title: `🍽️ Se alimente e registre, ${nome}!`,
+          title: `Se alimente e registre, ${nome}`,
           body: `${mealMsg} (${eatenKcal} de ${kcalGoal} kcal registradas hoje).`,
           tag: 'pulso-meal',
           url: './index.html#/app/calorias',
@@ -208,9 +207,9 @@ async function run() {
       try {
         await webpush.sendNotification(sub, JSON.stringify(msg));
         sentCount++;
-        console.log(`✅ Push [${msg.tag}] enviado para ${p.email}`);
+        console.log(`Push [${msg.tag}] enviado para ${p.email}`);
       } catch (err) {
-        console.warn(`⚠️ Falha ao enviar Push para ${p.email}:`, err.statusCode || err.message);
+        console.warn(`Falha ao enviar Push para ${p.email}:`, err.statusCode || err.message);
       }
     }
 
@@ -219,7 +218,7 @@ async function run() {
     }
   }
 
-  console.log(`🎉 Finalizado! Total de Web Push Notifications enviadas: ${sentCount}`);
+  console.log(`Finalizado. Total de Web Push Notifications enviadas: ${sentCount}`);
 }
 
 run().catch(err => {

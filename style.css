@@ -67,6 +67,7 @@ svg { display: block; }
   box-shadow: 0 0 0 4px hsl(78 82% 58% / .12);
 }
 .nav-link {
+  position: relative;
   display: flex; align-items: center; gap: 12px;
   padding: 11px 14px; border-radius: 12px;
   color: var(--muted); text-decoration: none; font-weight: 500;
@@ -75,6 +76,33 @@ svg { display: block; }
 .nav-link svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
 .nav-link:hover { color: var(--text); background: var(--surface); }
 .nav-link.active { color: var(--lime-ink); background: var(--lime); }
+
+.nav-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--text);
+  margin-left: auto;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 8px hsl(0 0% 100% / .65);
+  animation: dotPulse 1.8s ease-in-out infinite;
+}
+.nav-link.active .nav-dot {
+  background: var(--bg);
+  box-shadow: 0 0 0 2px var(--lime);
+}
+@keyframes dotPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.25); opacity: .75; }
+}
+
+.ic-mono {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  display: inline-block;
+  vertical-align: -3px;
+  flex: none;
+}
 
 .topbar {
   display: flex; justify-content: space-between; align-items: flex-end;
@@ -547,6 +575,14 @@ td { padding: 10px; box-shadow: 0 -1px 0 var(--line); white-space: nowrap; }
   .nav-link { flex-direction: column; gap: 2px; padding: 7px 4px; font-size: .66rem; flex: 1; border-radius: 10px; }
   .nav-link.active { background: transparent; color: var(--lime); }
   .nav-link.active svg { transform: translateY(-1px); }
+  .nav-dot {
+    position: absolute;
+    top: 5px;
+    right: calc(50% - 16px);
+    margin-left: 0;
+    width: 8px;
+    height: 8px;
+  }
   .main { padding-top: 18px; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
 }

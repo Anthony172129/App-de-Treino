@@ -2,15 +2,11 @@
 
 /* =========================================================
    Pulso — App de Treino (Infraestrutura 100% Supabase + RBAC + IA Ready)
-   - Autenticação: Supabase Auth (signUp / signInWithPassword / signOut / getSession)
-   - Banco de Dados: PostgreSQL + Row Level Security (RLS)
-     Tabelas: profiles, exercises_catalog, ai_settings, workouts,
-              workout_exercises, workout_sessions, nutrition_logs,
-              hydration_logs, body_measurements
-   - Controle de Acesso (RBAC):
-     * 'admin'   -> Redireciona para /admin (Gestão de Usuários/Roles, Catálogo Base IA, Config IA + alternância /app)
-     * 'trainer' -> Redireciona para /app com aba exclusiva "Meus Alunos"
-     * 'user'    -> Redireciona para /app (Metas, Treinos, Calorias, Água, Medidas)
+   - Login exclusivo (criação de contas restrita ao Administrador em /admin)
+   - Ícones minimalistas monocromáticos (zero emojis na interface)
+   - Notificações de Água e Alimentação: enviadas apenas para a barra de
+     notificações do celular (Web Push) + pontinho em destaque (.nav-dot)
+     nos botões de navegação "Água" e "Calorias" (sem banners na tela inicial).
    ========================================================= */
 
 const ACCOUNTS_KEY = 'pulso-accounts-v2';
@@ -148,6 +144,27 @@ const timeNow = () => new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', 
 const EMPTY_DAY = () => ({ water: [], meals: [], sessions: [] });
 const isValidEmail = email => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
 
+/* ---------- Biblioteca de Ícones Minimalistas Monocromáticos (Preto e Branco) ---------- */
+const ICON = {
+  trash: '<svg viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4zm-3 6h12l-1 12H7z"/></svg>',
+  chev: '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+  dumbbell: '<svg viewBox="0 0 24 24"><path d="M2 10h2V8h2v8H4v-2H2zm4-4h3v12H6zm9 0h3v12h-3zm3 2h2v2h2v4h-2v2h-2zM9 11h6v2H9z"/></svg>',
+  drop: '<svg viewBox="0 0 24 24"><path d="M12 2s7 7.5 7 13a7 7 0 0 1-14 0c0-5.5 7-13 7-13z"/></svg>',
+  fire: '<svg viewBox="0 0 24 24"><path d="M12 2c1 4 6 6 6 12a6 6 0 0 1-12 0c0-3 2-5 3-6 0 2 1 3 2 3 0-4-1-6 1-9z"/></svg>',
+  ruler: '<svg viewBox="0 0 24 24"><path d="M3 7h18v10H3zm3 0v4m3-4v2m3-2v4m3-4v2m3-2v4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+  star: '<svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .6-5.3 4.7 1.6 7.2L12 17.8 5.7 21.5l1.6-7.2L2 9.6 9 9z"/></svg>',
+  bell: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 0 0 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>',
+  check: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>',
+  alert: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>',
+  clock: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 11h4v2h-6V7h2z"/></svg>',
+  users: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
+  sparkle: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/></svg>',
+  db: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M12 3C7.58 3 4 4.79 4 7v10c0 2.21 3.58 4 8 4s8-1.79 8-4V7c0-2.21-3.58-4-8-4zm0 2c3.87 0 6 1.5 6 2s-2.13 2-6 2-6-1.5-6-2 2.13-2 6-2zm6 12c0 .5-2.13 2-6 2s-6-1.5-6-2v-2.23c1.61.78 3.72 1.23 6 1.23s4.39-.45 6-1.23V17zm0-5c0 .5-2.13 2-6 2s-6-1.5-6-2V9.77C7.61 10.55 9.72 11 12 11s4.39-.45 6-1.23V12z"/></svg>',
+  refresh: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>',
+  plus: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>',
+  dropInline: '<svg class="ic-mono" viewBox="0 0 24 24"><path d="M12 2s7 7.5 7 13a7 7 0 0 1-14 0c0-5.5 7-13 7-13z"/></svg>',
+};
+
 /* ---------- Cálculo de Idade por Dia, Mês e Ano ---------- */
 function calcAgeFromDOB(dia, mes, ano) {
   const d = Number(dia), m = Number(mes), y = Number(ano);
@@ -173,17 +190,14 @@ function normalizeMeters(val) {
 let currentUserEmail = null;
 let currentUserId = null;
 let S = structuredClone(DEFAULT_STATE);
-let sb = null; // Instância ativa do @supabase/supabase-js
+let sb = null;
 let activeExecution = null;
 
-// Cache em memória das tabelas administrativas e de trainer
 let allProfilesList = [];
 let catalogExercises = [];
 let aiSettings = structuredClone(DEFAULT_AI_SETTINGS);
 let selectedStudentId = null;
 
-// Estado de roteamento RBAC:
-// currentArea: 'app' (/app) ou 'admin' (/admin)
 let currentArea = 'app';
 let route = 'inicio';
 let adminRoute = 'users';
@@ -265,7 +279,6 @@ function saveLocalState() {
   S.profile.pontuacao = totalPoints();
   localStorage.setItem(userStorageKey(currentUserEmail), JSON.stringify(S));
 
-  // Sincroniza também na lista local de contas para o painel Admin funcionar mesmo antes das chaves
   const accs = loadAccounts();
   if (accs[currentUserEmail]) {
     accs[currentUserEmail].role = S.profile.role;
@@ -289,7 +302,7 @@ async function initSupabase() {
   sb = window.PulsoSupabase ? window.PulsoSupabase.init() : null;
   if (!sb) {
     if (badge) {
-      badge.textContent = '⚡ Aguardando chaves Supabase';
+      badge.textContent = 'Aguardando chaves Supabase';
       badge.classList.remove('online');
     }
     catalogExercises = loadLocalCatalog();
@@ -297,13 +310,72 @@ async function initSupabase() {
     return false;
   }
   if (badge) {
-    badge.textContent = '⚡ Supabase Ativo';
+    badge.textContent = 'Supabase Ativo';
     badge.classList.add('online');
   }
   return true;
 }
 
-// Sincroniza os campos do perfil + notificações na tabela public.profiles do Supabase
+// Cria conta de novo usuário em segundo plano (sem desconectar o Administrador atual)
+async function adminCreateNewAccount({ email, password, nome, role }) {
+  const cleanEmail = email.toLowerCase().trim();
+  const cleanRole = ['admin', 'trainer', 'user'].includes(role) ? role : 'user';
+  const cleanNome = nome.trim() || cleanEmail.split('@')[0];
+
+  if (sb && window.PulsoSupabase && window.supabase?.createClient) {
+    const creds = window.PulsoSupabase.getCredentials();
+    // Instância isolada com persistSession: false para não sobrescrever a sessão do Admin logado
+    const tempClient = window.supabase.createClient(creds.url, creds.anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+
+    const { data, error } = await tempClient.auth.signUp({
+      email: cleanEmail,
+      password,
+      options: {
+        data: {
+          nome: cleanNome,
+          role: cleanRole,
+          sexo: 'm',
+          nascimento: { dia: 1, mes: 1, ano: 2000 },
+          idade: 25,
+          altura_m: 1.75,
+          peso: 75,
+          atividade: 1.55,
+          objetivo: 'manter',
+        },
+      },
+    });
+
+    if (error) throw error;
+    const newUserId = data?.user?.id || uid();
+
+    // O Admin logado (sb) garante que a role e o perfil na tabela public.profiles estejam atualizados
+    await sb.from('profiles').upsert({
+      id: newUserId,
+      email: cleanEmail,
+      nome: cleanNome,
+      role: cleanRole,
+      configurado: false,
+    });
+
+    const accs = loadAccounts();
+    accs[cleanEmail] = { id: newUserId, email: cleanEmail, senha: password, nome: cleanNome, role: cleanRole };
+    saveAccounts(accs);
+    await fetchAllProfilesForAdminOrTrainer();
+    return { id: newUserId, email: cleanEmail, role: cleanRole };
+  }
+
+  // Fallback local se estiver offline
+  const accs = loadAccounts();
+  if (accs[cleanEmail]) throw new Error('Este Gmail já está cadastrado.');
+  const newUserId = uid();
+  accs[cleanEmail] = { id: newUserId, email: cleanEmail, senha: password, nome: cleanNome, role: cleanRole };
+  saveAccounts(accs);
+  await fetchAllProfilesForAdminOrTrainer();
+  return { id: newUserId, email: cleanEmail, role: cleanRole };
+}
+
 async function syncProfileToSupabase() {
   if (!sb || !currentUserId) return;
   try {
@@ -337,7 +409,6 @@ async function syncProfileToSupabase() {
   }
 }
 
-// Carrega todos os dados relacionais do usuário autenticado a partir das tabelas do Supabase
 async function fetchUserDataFromSupabase(userId, email) {
   if (!sb || !userId) return null;
   try {
@@ -502,16 +573,6 @@ async function fetchAllProfilesForAdminOrTrainer() {
 const peek = (k = dkey()) => S.log[k] || EMPTY_DAY();
 const today = () => (S.log[dkey()] ||= EMPTY_DAY());
 
-const ICON = {
-  trash: '<svg viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4zm-3 6h12l-1 12H7z"/></svg>',
-  chev: '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
-  dumbbell: '<svg viewBox="0 0 24 24"><path d="M2 10h2V8h2v8H4v-2H2zm4-4h3v12H6zm9 0h3v12h-3zm3 2h2v2h2v4h-2v2h-2zM9 11h6v2H9z"/></svg>',
-  drop: '<svg viewBox="0 0 24 24"><path d="M12 2s7 7.5 7 13a7 7 0 0 1-14 0c0-5.5 7-13 7-13z"/></svg>',
-  fire: '<svg viewBox="0 0 24 24"><path d="M12 2c1 4 6 6 6 12a6 6 0 0 1-12 0c0-3 2-5 3-6 0 2 1 3 2 3 0-4-1-6 1-9z"/></svg>',
-  ruler: '<svg viewBox="0 0 24 24"><path d="M3 7h18v10H3zm3 0v4m3-4v2m3-2v4m3-4v2m3-2v4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
-  star: '<svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .6-5.3 4.7 1.6 7.2L12 17.8 5.7 21.5l1.6-7.2L2 9.6 9 9z"/></svg>',
-};
-
 /* ---------- Cálculos & Hidratação Científica ---------- */
 const P = () => S.profile;
 function bmr() {
@@ -627,7 +688,7 @@ function getWaterIntervalMs() {
 }
 
 function formatWaterCountdown(ms) {
-  if (ms <= 0) return '00:00 (disparando agora!)';
+  if (ms <= 0) return '00:00 (disparando agora)';
   const totalSec = Math.ceil(ms / 1000);
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
@@ -669,8 +730,8 @@ async function scheduleExactWaterTimer(resetCycle = false) {
     enabled: true,
     dueAt,
     intervalMs,
-    title: `💧 O timer de água fechou, ${nome}!`,
-    body: `Hora de beber água! Você bebeu ${fmt(drank)} ml de ${fmt(goal)} ml hoje (faltam ${fmt(falta)} ml). Beba 250 ml agora!`,
+    title: `O timer de água fechou, ${nome}`,
+    body: `Hora de beber água. Você bebeu ${fmt(drank)} ml de ${fmt(goal)} ml hoje (faltam ${fmt(falta)} ml). Beba 250 ml agora.`,
     tag: 'pulso-water-timer',
     url: './index.html#/app/agua',
   };
@@ -702,8 +763,8 @@ function onWaterTimerClosed() {
     const falta = Math.max(0, goal - drank);
     const nome = (S.profile?.nome || currentUserEmail || 'Atleta').split(' ')[0];
     sendBrowserNotification(
-      `💧 O timer de água fechou, ${nome}!`,
-      `Hora de beber água! Você bebeu ${fmt(drank)} ml de ${fmt(goal)} ml hoje (faltam ${fmt(falta)} ml). Beba 250 ml agora!`,
+      `O timer de água fechou, ${nome}`,
+      `Hora de beber água. Você bebeu ${fmt(drank)} ml de ${fmt(goal)} ml hoje (faltam ${fmt(falta)} ml). Beba 250 ml agora.`,
       'pulso-water-timer',
       './index.html#/app/agua'
     );
@@ -712,7 +773,7 @@ function onWaterTimerClosed() {
   S.notifications.nextWaterRemindAt = now + intervalMs;
   save();
   scheduleExactWaterTimer(false);
-  renderAlertBanners();
+  updateNavigationDots();
 }
 
 if ('serviceWorker' in navigator) {
@@ -724,7 +785,7 @@ if ('serviceWorker' in navigator) {
       S.notifications.nextWaterRemindAt = now + getWaterIntervalMs();
       save();
       scheduleExactWaterTimer(false);
-      renderAlertBanners();
+      updateNavigationDots();
     }
   });
 }
@@ -789,14 +850,14 @@ async function requestNotificationPermission() {
     const sub = await subscribeUserToWebPush();
     scheduleExactWaterTimer(true);
     await sendBrowserNotification(
-      'Pulso · Web Push Ativado! 🔔',
+      'Pulso · Web Push Ativado',
       sub
-        ? `Timer de água iniciado (${S.notifications.waterIntervalMin || 90} min)! Você será notificado exatamente quando o timer fechar, mesmo com o app fechado.`
-        : 'Notificações do sistema ativadas para Água, Alimentação e Treino!',
+        ? `Timer de água iniciado (${S.notifications.waterIntervalMin || 90} min). Você será notificado na barra do celular quando o timer fechar.`
+        : 'Notificações do sistema ativadas na barra do dispositivo.',
       'pulso-welcome'
     );
     render();
-    toast(sub ? '✅ Web Push (VAPID) + Timer de Água salvos no Supabase!' : '🔔 Notificações ativadas!');
+    toast(sub ? 'Web Push (VAPID) e Timer de Água salvos no Supabase' : 'Notificações ativadas');
   } else {
     save();
     render();
@@ -814,11 +875,40 @@ function getLastWorkoutTimestamp() {
   return d.getTime();
 }
 
+// Verifica pendências de Água e Alimentação para destacar apenas com um pontinho (.nav-dot) nos botões das abas
+function updateNavigationDots() {
+  if (!currentUserEmail) return;
+  const k = dkey();
+  const now = new Date();
+  const hour = now.getHours();
+
+  // 1. Pendência de Água: se noch não bateu a meta de água do dia
+  const waterPending = waterOf(k) < waterGoal(k);
+  const dotAgua = $('#dot-agua');
+  if (dotAgua) dotAgua.style.display = waterPending ? 'inline-block' : 'none';
+
+  // 2. Pendência de Alimentação: se ainda não registrou a refeição esperada para a faixa de horário ou está abaixo da meta calórica
+  const meals = peek(k).meals;
+  let foodPending = meals.length === 0 || kcalIn(k) < kcalGoal() * 0.9;
+  if (hour >= 8 && hour < 12 && !meals.length) foodPending = true;
+  else if (hour >= 12 && hour < 16 && !meals.some(m => m.tipo === 'Almoço')) foodPending = true;
+  else if (hour >= 16 && hour < 19 && meals.length < 2) foodPending = true;
+  else if (hour >= 19 && !meals.some(m => m.tipo === 'Jantar')) foodPending = true;
+
+  const dotCalorias = $('#dot-calorias');
+  if (dotCalorias) dotCalorias.style.display = foodPending ? 'inline-block' : 'none';
+
+  // 3. Pendência de Treino: se hoje é dia de treino e ainda não treinou
+  const trainPending = isTrainingDay(now) && !trained(k);
+  const dotTreinos = $('#dot-treinos');
+  if (dotTreinos) dotTreinos.style.display = trainPending ? 'inline-block' : 'none';
+}
+
+// Na visão geral, exibe apenas o alerta crítico de 24h sem treino (Água e Alimentação vão apenas para a barra de notificações do celular + pontinho no botão da aba)
 function getActiveReminders() {
   if (!currentUserEmail) return [];
   const k = dkey();
   const now = new Date();
-  const hour = now.getHours();
   const alerts = [];
 
   const lastW = getLastWorkoutTimestamp();
@@ -830,42 +920,11 @@ function getActiveReminders() {
     alerts.push({
       type: 'warn',
       id: 'missed-24h',
-      text: `⚠️ Faz <b>${hRound}h</b> desde o seu último treino! Por que você ainda não treinou hoje?`,
+      text: `${ICON.alert} Faz <b>${hRound}h</b> desde o seu último treino. Por que você ainda não treinou hoje?`,
       actions: `
         <button class="btn primary small" data-action="go-train-now">Treinar agora</button>
         <button class="btn ghost small" data-action="open-missed-dialog">Explicar motivo</button>
       `,
-    });
-  }
-
-  const expectedWaterRatio = clamp01((hour - 7) / 14);
-  const currentWaterRatio = waterOf(k) / waterGoal(k);
-  if (hour >= 8 && currentWaterRatio < expectedWaterRatio - 0.15 && waterOf(k) < waterGoal(k)) {
-    const falta = waterGoal(k) - waterOf(k);
-    alerts.push({
-      type: 'water',
-      id: 'water-remind',
-      text: `💧 <b>Hora de beber água!</b> Você bebeu ${fmt(waterOf(k))} ml hoje (faltam ${fmt(falta)} ml para a meta). Registre agora!`,
-      actions: `
-        <button class="btn water small" data-action="add-water" data-id="250">+250 ml agora</button>
-        <a class="btn ghost small" href="#/app/agua">Abrir Água</a>
-      `,
-    });
-  }
-
-  const meals = peek(k).meals;
-  let missingMeal = null;
-  if (hour >= 8 && hour < 12 && !meals.length) missingMeal = 'Café da manhã';
-  else if (hour >= 12 && hour < 16 && !meals.some(m => m.tipo === 'Almoço')) missingMeal = 'Almoço';
-  else if (hour >= 16 && hour < 19 && meals.length < 2) missingMeal = 'Lanche da tarde';
-  else if (hour >= 19 && !meals.some(m => m.tipo === 'Jantar')) missingMeal = 'Jantar';
-
-  if (missingMeal) {
-    alerts.push({
-      type: 'food',
-      id: 'food-remind',
-      text: `🍽️ <b>Se alimente e registre!</b> Ainda não vimos seu registro de <b>${missingMeal}</b> hoje (${fmt(kcalIn(k))} / ${fmt(kcalGoal())} kcal).`,
-      actions: `<a class="btn food small" href="#/app/calorias">Registrar refeição</a>`,
     });
   }
 
@@ -878,6 +937,8 @@ function checkPeriodicNotifications() {
   const k = dkey();
   const hour = new Date().getHours();
 
+  updateNavigationDots();
+
   const lastW = getLastWorkoutTimestamp();
   const hoursSince = lastW ? (now - lastW) / 3600000 : 0;
   const alreadyJustifiedToday = (S.missedReasons || []).some(r => r.data === k);
@@ -886,13 +947,13 @@ function checkPeriodicNotifications() {
       S.notifications.lastMissedPromptAt = now;
       save();
       sendBrowserNotification(
-        '⚠️ Faz 24h desde o seu último treino!',
+        'Faz 24h desde o seu último treino',
         'Você ainda não registrou seu treino de hoje. Por que você faltou?',
         'pulso-missed-24h'
       );
       const dlg = $('#missed-workout-dialog');
       if (dlg && !dlg.open) {
-        $('#missed-workout-sub').textContent = `Já se passaram ${Math.floor(hoursSince)} horas desde o seu último treino. Conta pra gente o que houve ou inicie seu treino agora!`;
+        $('#missed-workout-sub').textContent = `Já se passaram ${Math.floor(hoursSince)} horas desde o seu último treino. Conta pra gente o que houve ou inicie seu treino agora.`;
         dlg.showModal();
       }
     }
@@ -911,14 +972,16 @@ function checkPeriodicNotifications() {
     S.notifications.lastMealRemindHour = hour;
     save();
     sendBrowserNotification(
-      '🍽️ Hora de se alimentar!',
-      `Não esqueça de fazer sua refeição e registrar as calorias no Pulso.`,
-      'pulso-meal'
+      'Hora de se alimentar',
+      'Não esqueça de fazer sua refeição e registrar as calorias no Pulso.',
+      'pulso-meal',
+      './index.html#/app/calorias'
     );
   }
 }
 
 function renderAlertBanners() {
+  updateNavigationDots();
   const box = $('#alert-banners');
   if (!box) return;
   const alerts = getActiveReminders();
@@ -950,7 +1013,7 @@ const setupBanner = () => P().configurado ? '' : `
 
 /* =========================================================================
    PAINEL ADMINISTRATIVO (/admin — Exclusivo para role === 'admin')
-   1. Gestão de Usuários & Roles (RBAC) + Vínculo Aluno <-> Trainer
+   1. Criar Nova Conta (Gmail + Senha + Role definida pelo Admin) & Gestão RBAC
    2. Catálogo de Exercícios Base (exercises_catalog) para Geração IA
    3. Configurações do Motor de IA (ai_settings) + Gerador de Treino IA
    ========================================================================= */
@@ -958,20 +1021,52 @@ function renderAdminUsers() {
   const trainers = allProfilesList.filter(u => u.role === 'trainer' || u.role === 'admin');
   return `
   <div class="card">
+    <h2>${ICON.plus} Criar Nova Conta de Usuário (Exclusivo Administrador)</h2>
+    <p class="sub">Cadastre o Gmail e determine a senha inicial do usuário. Em seguida, defina a função (<code>user</code>, <code>trainer</code> ou <code>admin</code>) que essa conta exercerá no sistema.</p>
+    <form class="form" data-form="admin-create-user">
+      <div class="row">
+        <label class="field">
+          <span>Nome do usuário</span>
+          <input name="nome" type="text" required placeholder="Ex.: Lucas Oliveira" />
+        </label>
+        <label class="field">
+          <span>Gmail da conta *</span>
+          <input name="email" type="email" required placeholder="usuario@gmail.com" />
+        </label>
+        <label class="field">
+          <span>Senha inicial * (mín. 6)</span>
+          <input name="senha" type="password" minlength="6" required placeholder="Defina a senha" />
+        </label>
+        <label class="field">
+          <span>Função (Role RBAC) *</span>
+          <select name="role" required>
+            <option value="user" selected>Aluno / Usuário (user)</option>
+            <option value="trainer">Personal Trainer (trainer)</option>
+            <option value="admin">Administrador (admin)</option>
+          </select>
+        </label>
+      </div>
+      <div>
+        <button type="submit" class="btn primary">${ICON.plus}<span>Criar conta e definir função</span></button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
     <div class="card-head">
       <div>
-        <h2>👥 Gestão de Usuários, Roles (RBAC) e Vínculo de Personal Trainer</h2>
-        <p class="sub">Altere o nível de permissão (<code>admin</code>, <code>trainer</code>, <code>user</code>) e vincule alunos a um Personal Trainer na tabela <code>public.profiles</code>.</p>
+        <h2>${ICON.users} Contas Registradas & Controle de Funções (RBAC)</h2>
+        <p class="sub">Altere a função (<code>admin</code>, <code>trainer</code>, <code>user</code>) de qualquer conta existente ou vincule alunos a um Personal Trainer.</p>
       </div>
-      <button class="btn ghost small" data-action="refresh-admin-data">🔄 Atualizar lista</button>
+      <button class="btn ghost small" data-action="refresh-admin-data">${ICON.refresh}<span>Atualizar lista</span></button>
     </div>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
             <th>Nome</th>
-            <th>E-mail</th>
-            <th>Role (RBAC)</th>
+            <th>Gmail</th>
+            <th>Função (Role)</th>
             <th>Trainer Vinculado</th>
             <th>Peso / Meta Água</th>
             <th>Pontuação</th>
@@ -983,7 +1078,7 @@ function renderAdminUsers() {
               <td><b>${esc(u.nome || 'Sem nome')}</b></td>
               <td>${esc(u.email || '')}</td>
               <td>
-                <select data-action="change-user-role" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" style="width:140px;padding:6px 8px;font-size:.8rem">
+                <select data-action="change-user-role" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" style="width:155px;padding:6px 8px;font-size:.8rem">
                   <option value="user" ${u.role === 'user' ? 'selected' : ''}>user (Aluno)</option>
                   <option value="trainer" ${u.role === 'trainer' ? 'selected' : ''}>trainer (Personal)</option>
                   <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin (Total)</option>
@@ -1009,7 +1104,7 @@ function renderAdminCatalog() {
   return `
   <div class="grid-2">
     <div class="card">
-      <h2>➕ Cadastrar Exercício no Catálogo Base (IA)</h2>
+      <h2>${ICON.plus} Cadastrar Exercício no Catálogo Base (IA)</h2>
       <p class="sub">Estes exercícios ficam salvos na tabela <code>public.exercises_catalog</code> para a IA montar treinos personalizados.</p>
       <form class="form" data-form="admin-catalog">
         <label class="field">
@@ -1046,12 +1141,12 @@ function renderAdminCatalog() {
           <span>Instruções biomecânicas para a IA (opcional)</span>
           <input name="instrucoes" placeholder="Ex.: Manter escápulas retraídas e controlar a descida." />
         </label>
-        <button type="submit" class="btn primary">+ Salvar no Catálogo (exercises_catalog)</button>
+        <button type="submit" class="btn primary">${ICON.plus}<span>Salvar no Catálogo (exercises_catalog)</span></button>
       </form>
     </div>
 
     <div class="card">
-      <h2>📚 Exercícios Cadastrados (${catalogExercises.length})</h2>
+      <h2>Exercícios Cadastrados (${catalogExercises.length})</h2>
       <p class="sub">Disponíveis para a geração de treinos por IA e fichas manuais.</p>
       <ul class="list" style="max-height:420px;overflow-y:auto">
         ${catalogExercises.length ? catalogExercises.map(ex => `
@@ -1073,7 +1168,7 @@ function renderAdminAi() {
   return `
   <div class="grid-2">
     <div class="card">
-      <h2>🤖 Configurações do Motor de Geração de Treinos por IA</h2>
+      <h2>${ICON.sparkle} Configurações do Motor de Geração de Treinos por IA</h2>
       <p class="sub">Parâmetros persistidos na tabela <code>public.ai_settings</code> que controlam como a IA consulta a <code>exercises_catalog</code>.</p>
       <form class="form" data-form="admin-ai-settings">
         <div class="row-2">
@@ -1096,12 +1191,12 @@ function renderAdminAi() {
           <span>System Prompt da IA</span>
           <textarea name="prompt_sistema" rows="4" required>${esc(aiSettings.prompt_sistema)}</textarea>
         </label>
-        <button type="submit" class="btn primary">💾 Salvar configurações da IA</button>
+        <button type="submit" class="btn primary">${ICON.check}<span>Salvar configurações da IA</span></button>
       </form>
     </div>
 
     <div class="card">
-      <h2>⚡ Testar Geração de Ficha a partir do Catálogo IA</h2>
+      <h2>${ICON.sparkle} Testar Geração de Ficha a partir do Catálogo IA</h2>
       <p class="sub">Gera imediatamente uma ficha baseada no objetivo do usuário e nos exercícios ativos em <code>exercises_catalog</code>.</p>
       <form class="form" data-form="generate-ai-workout">
         <label class="field">
@@ -1113,7 +1208,7 @@ function renderAdminAi() {
             <option value="Full Body / Condicionamento">Full Body / Condicionamento</option>
           </select>
         </label>
-        <button type="submit" class="btn body">✨ Gerar Ficha com IA usando Catálogo Base</button>
+        <button type="submit" class="btn body">${ICON.sparkle}<span>Gerar Ficha com IA usando Catálogo Base</span></button>
       </form>
       <div class="sweat-box" style="margin-top:14px">
         <b class="c-lime">Status do Catálogo IA</b>
@@ -1135,10 +1230,10 @@ function renderAlunos() {
   <div class="card">
     <div class="card-head">
       <div>
-        <h2>🏋️ Meus Alunos Vinculados (Personal Trainer)</h2>
+        <h2>${ICON.users} Meus Alunos Vinculados (Personal Trainer)</h2>
         <p class="sub">Acompanhe peso, hidratação, pontuação e prescreva fichas de treino diretamente para seus alunos (protegido via RLS <code>is_trainer_of</code>).</p>
       </div>
-      <button class="btn ghost small" data-action="refresh-admin-data">🔄 Atualizar alunos</button>
+      <button class="btn ghost small" data-action="refresh-admin-data">${ICON.refresh}<span>Atualizar alunos</span></button>
     </div>
     ${myStudents.length ? `
       <div class="table-wrap">
@@ -1230,11 +1325,11 @@ function renderInicio() {
   <div class="card">
     <div class="card-head">
       <div>
-        <h2>🔔 Lembretes & Timer de Água (Web Push)</h2>
-        <p class="sub" style="margin-bottom:6px">A notificação Web Push dispara exatamente quando o timer de água fechar (mesmo com o app fechado), além de cobrar refeições e 24h sem treino.</p>
+        <h2>${ICON.bell} Lembretes & Timer de Água (Web Push)</h2>
+        <p class="sub" style="margin-bottom:6px">As notificações de água e alimentação são enviadas diretamente para a barra de notificações do seu celular e sinalizadas com um ponto nos botões das abas.</p>
       </div>
       <button class="btn ${notifPerm === 'granted' ? 'ghost' : 'primary'} small" data-action="enable-notifications">
-        ${notifPerm === 'granted' ? '✅ Notificações Ativas (Testar)' : '🔔 Ativar notificações no celular'}
+        ${notifPerm === 'granted' ? `${ICON.check}<span>Notificações Ativas (Testar)</span>` : `${ICON.bell}<span>Ativar notificações no celular</span>`}
       </button>
     </div>
     <form class="form" data-form="notif-settings" style="margin-top:8px">
@@ -1247,11 +1342,11 @@ function renderInicio() {
         </label>
         <label class="field">
           <span>Próximo disparo de água em:</span>
-          <input id="water-timer-countdown" value="${waterOf(k) >= waterGoal(k) ? 'Meta de água concluída hoje! ✅' : formatWaterCountdown((S.notifications.nextWaterRemindAt || (Date.now() + getWaterIntervalMs())) - Date.now())}" disabled />
+          <input id="water-timer-countdown" value="${waterOf(k) >= waterGoal(k) ? 'Meta de água concluída hoje' : formatWaterCountdown((S.notifications.nextWaterRemindAt || (Date.now() + getWaterIntervalMs())) - Date.now())}" disabled />
         </label>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button type="submit" class="btn water small">⏱️ Salvar e reiniciar timer de água</button>
+        <button type="submit" class="btn water small">${ICON.clock}<span>Salvar e reiniciar timer de água</span></button>
         <button type="button" class="btn ghost small" data-action="open-missed-dialog">Simular cobrança de 24h sem treino</button>
       </div>
     </form>
@@ -1295,7 +1390,7 @@ function renderExecutionView() {
     <div class="sweat-box">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div>
-          <b class="c-water">💧 Hidratação durante este treino: ~${fmt(sweatMl)} ml</b>
+          <b class="c-water">${ICON.dropInline} Hidratação durante este treino: ~${fmt(sweatMl)} ml</b>
           <p class="note" style="margin:2px 0 0">Para repor o suor, beba cerca de <b>${fmt(per15Min)} ml a cada 15 min</b> de treino.</p>
         </div>
         <button type="button" class="btn water small" data-action="add-workout-water" data-id="${per15Min}">+ Beber ${per15Min} ml no treino</button>
@@ -1335,7 +1430,7 @@ function renderExecutionView() {
               <div class="set-badge">${sIdx + 1}ª</div>
               <input type="text" inputmode="numeric" name="reps-${exIdx}-${sIdx}" value="${esc(s.reps)}" placeholder="Reps" aria-label="Repetições da ${sIdx + 1}ª série" required />
               <input type="text" inputmode="decimal" name="carga-${exIdx}-${sIdx}" value="${esc(s.carga)}" placeholder="Ex: 20kg" aria-label="Carga da ${sIdx + 1}ª série" />
-              <button type="button" class="set-check" data-action="toggle-set-done" data-ex="${exIdx}" data-set="${sIdx}" title="Marcar série concluída">✓</button>
+              <button type="button" class="set-check" data-action="toggle-set-done" data-ex="${exIdx}" data-set="${sIdx}" title="Marcar série concluída">${ICON.check}</button>
             </div>
           `).join('')}
         </div>`;
@@ -1343,7 +1438,7 @@ function renderExecutionView() {
 
       <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:6px">
         <button type="button" class="btn ghost" data-action="cancel-execution">Cancelar</button>
-        <button type="submit" class="btn primary" id="finish-exec-btn">✅ Finalizar e salvar no Supabase</button>
+        <button type="submit" class="btn primary" id="finish-exec-btn">${ICON.check}<span>Finalizar e salvar no Supabase</span></button>
       </div>
     </form>
   </div>`;
@@ -1375,8 +1470,8 @@ function renderTreinos() {
         <p class="sub">Toque em um treino para abrir a ficha e preencher as <b>Repetições e Carga</b> de cada série.</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn body small" data-action="generate-quick-ai-workout">✨ Gerar Treino IA</button>
-        <button class="btn primary small" data-action="new-workout" id="new-workout">+ Criar novo treino</button>
+        <button class="btn body small" data-action="generate-quick-ai-workout">${ICON.sparkle}<span>Gerar Treino IA</span></button>
+        <button class="btn primary small" data-action="new-workout" id="new-workout">${ICON.plus}<span>Criar novo treino</span></button>
       </div>
     </div>
     ${S.workouts.length ? S.workouts.map(w => `
@@ -1392,7 +1487,7 @@ function renderTreinos() {
           <button class="btn ghost small" data-action="edit-workout" data-id="${w.id}">Editar exercícios / séries</button>
           <button class="btn danger small" data-action="del-workout" data-id="${w.id}">Excluir</button>
         </div>
-      </div>`).join('') : '<p class="empty">Nenhum treino cadastrado. Toque em "+ Criar novo treino".</p>'}
+      </div>`).join('') : '<p class="empty">Nenhum treino cadastrado. Toque em "Criar novo treino".</p>'}
   </div>
 
   <div class="grid-2">
@@ -1514,7 +1609,7 @@ function renderAgua() {
     <div>
       <p class="eyebrow">Bebido hoje (Dia + Treino · <code>hydration_logs</code>)</p>
       <div class="water-num">${fmt(drank)} <small>/ ${fmt(goal)} ml</small></div>
-      <p class="note">${drank >= goal ? 'Meta de água batida! 30 pontos garantidos.' : `Faltam ${fmt(goal - drank)} ml · cerca de ${Math.ceil((goal - drank) / 250)} copos de 250 ml.`}</p>
+      <p class="note">${drank >= goal ? 'Meta de água batida. 30 pontos garantidos.' : `Faltam ${fmt(goal - drank)} ml · cerca de ${Math.ceil((goal - drank) / 250)} copos de 250 ml.`}</p>
       <div class="quick">
         ${[200, 250, 350, 500].map(ml => `<button class="btn" data-action="add-water" data-id="${ml}" id="water-${ml}">+${ml} ml<small>${ml === 200 ? 'copo pequeno' : ml === 250 ? 'copo' : ml === 350 ? 'lata' : 'garrafa'}</small></button>`).join('')}
       </div>
@@ -1528,7 +1623,7 @@ function renderAgua() {
   <div class="card">
     <div class="card-head">
       <div>
-        <h2>💦 Água Durante o Treino (Reposição do Suor)</h2>
+        <h2>${ICON.dropInline} Água Durante o Treino (Reposição do Suor)</h2>
         <p class="sub">Segundo o Colégio Americano de Medicina do Esporte (ACSM), além da água do dia (${fmt(basal)} ml), você perde líquido transpirando e deve repor durante o treino.</p>
       </div>
     </div>
@@ -1550,7 +1645,7 @@ function renderAgua() {
   <div class="grid-2">
     <div class="card">
       <h2>Registros de hoje</h2>
-      ${water.length ? `<ul class="list" style="margin-top:12px">${[...water].reverse().map(w => `<li class="item"><div><div class="t">${w.duranteTreino ? '💦 Água durante o treino' : '💧 Água do dia'}</div><div class="m">${w.hora}</div></div><div class="val c-water">${fmt(w.ml)} ml</div>${del('del-water', w.id)}</li>`).join('')}</ul>` : '<p class="empty">Nenhum registro ainda. Comece com um copo!</p>'}
+      ${water.length ? `<ul class="list" style="margin-top:12px">${[...water].reverse().map(w => `<li class="item"><div><div class="t">${ICON.dropInline} ${w.duranteTreino ? 'Água durante o treino' : 'Água do dia'}</div><div class="m">${w.hora}</div></div><div class="val c-water">${fmt(w.ml)} ml</div>${del('del-water', w.id)}</li>`).join('')}</ul>` : '<p class="empty">Nenhum registro ainda. Comece com um copo.</p>'}
     </div>
     <div class="card">
       <h2>Últimos 7 dias</h2><p class="sub">Meta diária: ${fmt(basal)} ml basal + reposição dos treinos do dia</p>
@@ -1673,16 +1768,6 @@ function renderMedidas() {
 }
 
 /* ---------- Autenticação, Roteamento e Proteção RBAC (/admin vs /app) ---------- */
-function switchAuthTab(tab) {
-  const isLogin = tab === 'login';
-  $('#tab-login').classList.toggle('active', isLogin);
-  $('#tab-register').classList.toggle('active', !isLogin);
-  $('#login-form').style.display = isLogin ? 'grid' : 'none';
-  $('#register-form').style.display = isLogin ? 'none' : 'grid';
-  $('#login-error').textContent = '';
-  $('#register-error').textContent = '';
-}
-
 async function enterAppWithUser(email, stateData, userId = null) {
   currentUserEmail = email.toLowerCase().trim();
   S = hydrateState(stateData || loadUserState(currentUserEmail));
@@ -1700,9 +1785,6 @@ async function enterAppWithUser(email, stateData, userId = null) {
 
   $('#auth-gate').style.display = 'none';
 
-  // Roteamento inicial baseado na Role (RBAC):
-  // Se role === 'admin' -> vai para /admin
-  // Se role === 'trainer' ou 'user' -> vai para /app
   if (role === 'admin') {
     currentArea = 'admin';
     adminRoute = 'users';
@@ -1729,7 +1811,8 @@ async function logoutUser() {
   $('#app-shell').style.display = 'none';
   $('#admin-shell').style.display = 'none';
   $('#auth-gate').style.display = 'flex';
-  switchAuthTab('login');
+  const errEl = $('#login-error');
+  if (errEl) errEl.textContent = '';
 }
 
 /* ---------- Renderização e Guardião de Rotas (RBAC) ---------- */
@@ -1759,19 +1842,17 @@ function render(animate = false) {
   const role = S.profile.role || 'user';
   const firstName = (S.profile.nome || currentUserEmail).split(' ')[0];
 
-  // Proteção estrita de Rota: bloqueia qualquer usuário sem role === 'admin' de acessar /admin
   if (currentArea === 'admin' && role !== 'admin') {
     currentArea = 'app';
     route = 'inicio';
     location.hash = '#/app/inicio';
-    toast('⛔ Acesso negado: a rota /admin é restrita a administradores.');
+    toast('Acesso negado: a rota /admin é restrita a administradores.');
   }
 
-  // Proteção da aba Meus Alunos: apenas 'trainer' e 'admin'
   if (currentArea === 'app' && route === 'alunos' && role === 'user') {
     route = 'inicio';
     location.hash = '#/app/inicio';
-    toast('⛔ Acesso restrito a Personal Trainers.');
+    toast('Acesso restrito a Personal Trainers.');
   }
 
   $('#auth-gate').style.display = 'none';
@@ -1790,7 +1871,7 @@ function render(animate = false) {
       <div>Administrador <b style="color:var(--text)">${esc(S.profile.nome || firstName)}</b></div>
       <div class="nav-user-email">${esc(currentUserEmail)}</div>
       <div style="display:flex;gap:6px;margin-top:4px">
-        <button class="btn ghost small" data-action="open-cloud-dialog" style="flex:1;padding:6px 8px;font-size:.75rem">⚡ Supabase</button>
+        <button class="btn ghost small" data-action="open-cloud-dialog" style="flex:1;padding:6px 8px;font-size:.75rem">${ICON.db}<span>Supabase</span></button>
         <button class="btn danger small" data-action="logout" style="padding:6px 10px;font-size:.75rem">Sair</button>
       </div>`;
 
@@ -1804,11 +1885,9 @@ function render(animate = false) {
   $('#admin-shell').style.display = 'none';
   $('#app-shell').style.display = '';
 
-  // Exibe aba "Meus Alunos" se for 'trainer' ou 'admin'
   const navAlunos = $('#nav-alunos');
   if (navAlunos) navAlunos.style.display = (role === 'trainer' || role === 'admin') ? '' : 'none';
 
-  // Exibe botão de voltar para /admin se for 'admin'
   const adminBackWrap = $('#admin-back-btn-wrap');
   const topbarAdminBtn = $('#topbar-admin-btn');
   if (adminBackWrap) adminBackWrap.style.display = role === 'admin' ? '' : 'none';
@@ -1834,7 +1913,7 @@ function render(animate = false) {
     <div>Conectado como <b style="color:var(--text)">${esc(S.profile.nome || firstName)}</b></div>
     <div class="nav-user-email">${esc(currentUserEmail)}</div>
     <div style="display:flex;gap:6px;margin-top:4px">
-      <button class="btn ghost small" data-action="open-cloud-dialog" style="flex:1;padding:6px 8px;font-size:.75rem">⚡ Supabase</button>
+      <button class="btn ghost small" data-action="open-cloud-dialog" style="flex:1;padding:6px 8px;font-size:.75rem">${ICON.db}<span>Supabase</span></button>
       <button class="btn danger small" data-action="logout" style="padding:6px 10px;font-size:.75rem">Sair</button>
     </div>`;
 
@@ -1854,7 +1933,7 @@ function render(animate = false) {
 }
 
 function go() {
-  const rawHash = location.hash.slice(1); // ex: "/admin/users", "/app/treinos" ou "treinos"
+  const rawHash = location.hash.slice(1);
   const role = S.profile.role || 'user';
 
   if (rawHash.startsWith('/admin')) {
@@ -1863,7 +1942,7 @@ function go() {
       route = 'inicio';
       location.hash = '#/app/inicio';
       if (currentUserEmail) {
-        toast('⛔ Rota /admin bloqueada: você não possui permissão de administrador.');
+        toast('Rota /admin bloqueada: você não possui permissão de administrador.');
         render(true);
       }
       return;
@@ -1946,12 +2025,11 @@ async function generateWorkoutFromCatalog(focoDesejado = 'Peito e Tríceps') {
   }
 
   S.workouts.push(newW);
-  commit(`✨ "${newW.nome}" gerado com exercícios do Catálogo IA!`);
+  commit(`"${newW.nome}" gerado com exercícios do Catálogo IA.`);
 }
 
 /* ---------- Ações ---------- */
 const ACTIONS = {
-  'switch-auth-tab': id => switchAuthTab(id),
   'logout': () => logoutUser(),
   'enable-notifications': () => requestNotificationPermission(),
   'switch-to-app-view': () => {
@@ -1962,7 +2040,7 @@ const ACTIONS = {
   },
   'switch-to-admin-view': () => {
     if (S.profile.role !== 'admin') {
-      toast('⛔ Apenas usuários com role "admin" podem acessar /admin.');
+      toast('Apenas usuários com função "admin" podem acessar /admin.');
       return;
     }
     currentArea = 'admin';
@@ -1977,7 +2055,7 @@ const ACTIONS = {
       if (data?.length) saveLocalCatalog(data);
     }
     render();
-    toast('✅ Dados sincronizados com o Supabase!');
+    toast('Dados sincronizados com o Supabase');
   },
   'del-catalog-exercise': async id => {
     if (sb) {
@@ -2006,7 +2084,7 @@ const ACTIONS = {
       saveAccounts(accs);
     }
     render();
-    toast('🤝 Aluno vinculado à sua carteira de Personal Trainer!');
+    toast('Aluno vinculado à sua carteira de Personal Trainer');
   },
   'prescribe-workout': (id, btn) => {
     selectedStudentId = id;
@@ -2050,7 +2128,7 @@ const ACTIONS = {
     $('#supabase-url-input').value = creds.url || '';
     $('#supabase-key-input').value = creds.anonKey || '';
     $('#cloud-dialog-msg').textContent = creds.isConfigured
-      ? '✅ Cliente @supabase/supabase-js conectado.'
+      ? 'Cliente @supabase/supabase-js conectado.'
       : 'Informe o SUPABASE_URL e SUPABASE_ANON_KEY do seu projeto.';
     $('#cloud-dialog').showModal();
   },
@@ -2059,7 +2137,7 @@ const ACTIONS = {
     if (window.PulsoSupabase) window.PulsoSupabase.clearCredentials();
     initSupabase();
     $('#cloud-dialog').close();
-    toast('Credenciais do Supabase removidas deste navegador.');
+    toast('Credenciais personalizadas removidas.');
   },
   'add-water': async id => {
     const before = score().total;
@@ -2099,7 +2177,7 @@ const ACTIONS = {
     }
     const gained = score().total - before;
     scheduleExactWaterTimer(true);
-    commit(`💦 +${id} ml hidratado no treino!${gained > 0 ? ` · +${gained} pts` : ''}`);
+    commit(`+${id} ml hidratado no treino${gained > 0 ? ` · +${gained} pts` : ''}`);
   },
   'del-water': async id => {
     today().water = today().water.filter(x => String(x.id) !== String(id));
@@ -2192,7 +2270,7 @@ const FORMS = {
     errEl.textContent = '';
 
     if (!isValidEmail(email)) {
-      errEl.textContent = 'Informe um endereço de e-mail válido.';
+      errEl.textContent = 'Informe um endereço de Gmail válido.';
       return;
     }
 
@@ -2213,10 +2291,10 @@ const FORMS = {
         };
         saveAccounts(accs);
         await enterAppWithUser(email, remoteState || loadUserState(email), userId);
-        toast(`Bem-vindo! Role: ${(S.profile.role || 'user').toUpperCase()} ⚡`);
+        toast(`Bem-vindo! Função: ${(S.profile.role || 'user').toUpperCase()}`);
         return;
       } catch (err) {
-        errEl.textContent = 'E-mail ou senha incorretos no Supabase: ' + (err.message || '');
+        errEl.textContent = 'Conta não encontrada ou senha incorreta. Solicite o cadastro ao Administrador.';
         return;
       }
     }
@@ -2224,132 +2302,37 @@ const FORMS = {
     const accs = loadAccounts();
     const acc = accs[email];
     if (!acc || acc.senha !== senha) {
-      errEl.textContent = 'E-mail não encontrado ou senha incorreta.';
+      errEl.textContent = 'Conta não registrada pelo Administrador ou senha incorreta.';
       return;
     }
     const localSt = loadUserState(email);
     if (acc.role) localSt.profile.role = acc.role;
     await enterAppWithUser(email, localSt, acc.id || email);
-    toast(`Bem-vindo! Role: ${(S.profile.role || 'user').toUpperCase()}`);
+    toast(`Bem-vindo! Função: ${(S.profile.role || 'user').toUpperCase()}`);
   },
 
-  register: async f => {
+  'admin-create-user': async f => {
+    if (S.profile.role !== 'admin') return toast('Apenas o Administrador pode criar novas contas.');
     const nome = f.nome.value.trim();
     const email = f.email.value.trim().toLowerCase();
     const senha = f.senha.value;
-    const dia = +f.dia.value, mes = +f.mes.value, ano = +f.ano.value;
-    const peso = +String(f.peso.value).replace(',', '.');
-    const alturaM = normalizeMeters(f.altura_m.value);
-    const sexo = f.sexo.value;
-    const objetivo = f.objetivo.value;
-    const role = ['admin', 'trainer', 'user'].includes(f.role?.value) ? f.role.value : 'user';
-    const errEl = $('#register-error');
-    errEl.textContent = '';
+    const role = f.role.value;
 
-    if (nome.split(/\s+/).length < 2) {
-      errEl.textContent = 'Informe seu nome completo (nome e sobrenome).';
-      return;
-    }
-    if (!isValidEmail(email)) {
-      errEl.textContent = 'Informe um endereço de e-mail válido.';
-      return;
-    }
-    if (senha.length < 6) {
-      errEl.textContent = 'A senha deve ter pelo menos 6 caracteres.';
-      return;
-    }
-    const idade = calcAgeFromDOB(dia, mes, ano);
-    if (idade == null) {
-      errEl.textContent = 'Data de nascimento inválida. Verifique dia, mês e ano.';
-      return;
-    }
-    if (!peso || peso < 25 || peso > 300) {
-      errEl.textContent = 'Informe um peso válido em kg (entre 25 e 300 kg).';
-      return;
-    }
-    if (!alturaM) {
-      errEl.textContent = 'Informe a altura em metros (ex.: 1.75).';
-      return;
-    }
+    if (!isValidEmail(email)) return toast('Informe um Gmail válido.');
+    if (senha.length < 6) return toast('A senha deve ter no mínimo 6 caracteres.');
 
-    const alturaCm = Math.round(alturaM * 100);
-    const newState = structuredClone(DEFAULT_STATE);
-    let userId = uid();
-
-    newState.profile = {
-      id: userId,
-      nome,
-      email,
-      role,
-      trainer_id: null,
-      nascimento: { dia, mes, ano },
-      sexo,
-      idade,
-      altura: alturaCm,
-      altura_m: alturaM,
-      peso,
-      atividade: 1.55,
-      objetivo,
-      meta_agua: Math.round((peso * 35) / 50) * 50,
-      pontuacao: 0,
-      configurado: true,
-    };
-    newState.measures = [{ id: uid(), data: dkey(), peso }];
-
-    if (sb) {
-      try {
-        const { data, error } = await sb.auth.signUp({
-          email,
-          password: senha,
-          options: {
-            data: {
-              nome,
-              role,
-              sexo,
-              nascimento: { dia, mes, ano },
-              idade,
-              altura_m: alturaM,
-              peso,
-              atividade: 1.55,
-              objetivo,
-            },
-          },
-        });
-        if (error) throw error;
-        if (data?.user?.id) {
-          userId = data.user.id;
-          newState.profile.id = userId;
-        }
-        const remoteState = await fetchUserDataFromSupabase(userId, email);
-        if (remoteState) {
-          remoteState.profile.role = role;
-        }
-        const accs = loadAccounts();
-        accs[email] = { id: userId, email, senha, nome, role, peso, meta_agua: newState.profile.meta_agua, pontuacao: 0 };
-        saveAccounts(accs);
-        await enterAppWithUser(email, remoteState || newState, userId);
-        await syncProfileToSupabase();
-        toast(`Conta criada no Supabase (${role.toUpperCase()})! 🎉`);
-        return;
-      } catch (err) {
-        errEl.textContent = 'Erro ao cadastrar no Supabase: ' + (err.message || '');
-        return;
-      }
+    try {
+      await adminCreateNewAccount({ email, password: senha, nome, role });
+      f.reset();
+      render();
+      toast(`Conta ${email} criada com função "${role.toUpperCase()}"`);
+    } catch (err) {
+      toast('Erro ao criar conta: ' + (err.message || 'verifique os dados'));
     }
-
-    const accs = loadAccounts();
-    if (accs[email]) {
-      errEl.textContent = 'Esse e-mail já está cadastrado. Vá na aba "Entrar".';
-      return;
-    }
-    accs[email] = { id: userId, email, senha, nome, role, peso, meta_agua: newState.profile.meta_agua, pontuacao: 0 };
-    saveAccounts(accs);
-    await enterAppWithUser(email, newState, userId);
-    toast(`Conta criada! Perfil: ${role.toUpperCase()} 🎉`);
   },
 
   'admin-catalog': async f => {
-    if (S.profile.role !== 'admin') return toast('⛔ Permissão negada.');
+    if (S.profile.role !== 'admin') return toast('Permissão negada.');
     const item = {
       id: uid(),
       nome: f.nome.value.trim(),
@@ -2378,11 +2361,11 @@ const FORMS = {
     saveLocalCatalog([item, ...catalogExercises]);
     f.reset();
     render();
-    toast(`✅ "${item.nome}" adicionado ao Catálogo IA!`);
+    toast(`"${item.nome}" adicionado ao Catálogo IA`);
   },
 
   'admin-ai-settings': async f => {
-    if (S.profile.role !== 'admin') return toast('⛔ Permissão negada.');
+    if (S.profile.role !== 'admin') return toast('Permissão negada.');
     const cfg = {
       modelo: f.modelo.value,
       temperatura: +f.temperatura.value || 0.4,
@@ -2397,7 +2380,7 @@ const FORMS = {
     }
     saveLocalAiSettings(cfg);
     render();
-    toast('🤖 Configurações do motor de IA salvas!');
+    toast('Configurações do motor de IA salvas');
   },
 
   'generate-ai-workout': async f => {
@@ -2457,13 +2440,13 @@ const FORMS = {
     S.lastWorkoutAt = Date.now();
     activeExecution = null;
     const gained = score().total - before;
-    commit(gained > 0 ? `Treino finalizado! +${gained} pontos 🔥` : 'Treino salvo no Supabase! 💪');
+    commit(gained > 0 ? `Treino finalizado · +${gained} pontos` : 'Treino salvo no Supabase');
   },
 
   'notif-settings': f => {
     S.notifications.waterIntervalMin = +f.waterIntervalMin.value || 90;
     scheduleExactWaterTimer(true);
-    commit(`⏱️ Timer de água iniciado (${S.notifications.waterIntervalMin} min)!`);
+    commit(`Timer de água iniciado (${S.notifications.waterIntervalMin} min)`);
   },
 
   'missed-workout': f => {
@@ -2474,9 +2457,9 @@ const FORMS = {
     $('#missed-workout-dialog').close();
     if (motivo.includes('esqueci de registrar')) {
       location.hash = '#/app/treinos';
-      toast('Abra seu treino abaixo e registre suas séries!');
+      toast('Abra seu treino abaixo e registre suas séries.');
     } else {
-      commit('Justificativa registrada. Amanhã voltamos com tudo! 💪');
+      commit('Justificativa registrada.');
     }
   },
 
@@ -2484,7 +2467,7 @@ const FORMS = {
     const url = f.supabase_url.value.trim();
     const anonKey = f.supabase_anon_key.value.trim();
     if (!url || !anonKey || !/^https?:\/\//i.test(url)) {
-      $('#cloud-dialog-msg').textContent = '❌ Informe uma SUPABASE_URL válida (https://...) e a SUPABASE_ANON_KEY.';
+      $('#cloud-dialog-msg').textContent = 'Informe uma SUPABASE_URL válida (https://...) e a SUPABASE_ANON_KEY.';
       return;
     }
     window.PulsoSupabase.saveCredentials(url, anonKey);
@@ -2492,9 +2475,9 @@ const FORMS = {
     if (ok) {
       $('#cloud-dialog').close();
       if (currentUserEmail) await syncProfileToSupabase();
-      toast('⚡ Conectado ao Supabase com sucesso!');
+      toast('Conectado ao Supabase com sucesso');
     } else {
-      $('#cloud-dialog-msg').textContent = '❌ Não foi possível inicializar o cliente Supabase.';
+      $('#cloud-dialog-msg').textContent = 'Não foi possível inicializar o cliente Supabase.';
     }
   },
 
@@ -2633,7 +2616,7 @@ const FORMS = {
 
     if (targetUserId && targetUserId !== currentUserId) {
       $('#workout-dialog').close();
-      toast('🏋️ Ficha prescrita e salva para o aluno!');
+      toast('Ficha prescrita e salva para o aluno');
       return;
     }
 
@@ -2661,7 +2644,7 @@ document.addEventListener('change', async e => {
   const userEmail = sel.dataset.userEmail;
 
   if (action === 'change-user-role') {
-    if (S.profile.role !== 'admin') return toast('⛔ Apenas administradores podem alterar roles.');
+    if (S.profile.role !== 'admin') return toast('Apenas administradores podem alterar funções.');
     const newRole = sel.value;
     if (sb) {
       try { await sb.from('profiles').update({ role: newRole }).eq('id', userId); } catch (err) { /* ignora */ }
@@ -2677,12 +2660,12 @@ document.addEventListener('change', async e => {
       S.profile.role = newRole;
       saveLocalState();
     }
-    toast(`✅ Role de ${userEmail || userId} alterada para "${newRole}"`);
+    toast(`Função de ${userEmail || userId} alterada para "${newRole}"`);
     render();
   }
 
   if (action === 'assign-user-trainer') {
-    if (S.profile.role !== 'admin') return toast('⛔ Apenas administradores podem vincular trainers.');
+    if (S.profile.role !== 'admin') return toast('Apenas administradores podem vincular trainers.');
     const trainerId = sel.value || null;
     if (sb) {
       try { await sb.from('profiles').update({ trainer_id: trainerId }).eq('id', userId); } catch (err) { /* ignora */ }
@@ -2694,7 +2677,7 @@ document.addEventListener('change', async e => {
       accs[userEmail].trainer_id = trainerId;
       saveAccounts(accs);
     }
-    toast('✅ Vínculo de Personal Trainer atualizado!');
+    toast('Vínculo de Personal Trainer atualizado');
   }
 });
 
@@ -2709,11 +2692,6 @@ document.addEventListener('input', e => {
   if (e.target.id === 'meal-nome') {
     const food = FOODS.find(f => f[0] === e.target.value);
     if (food) { $('#meal-kcal').value = food[1]; $('#meal-prot').value = food[2]; }
-  }
-  if (['reg-dia', 'reg-mes', 'reg-ano'].includes(e.target.id)) {
-    const age = calcAgeFromDOB($('#reg-dia')?.value, $('#reg-mes')?.value, $('#reg-ano')?.value);
-    const preview = $('#reg-age-preview');
-    if (preview) preview.textContent = age != null ? `— ${age} anos` : '';
   }
   if (activeExecution && (e.target.id === 'exec-min' || e.target.id === 'exec-tipo')) {
     activeExecution.min = +($('#exec-min')?.value || 60);
@@ -2737,7 +2715,7 @@ setInterval(() => {
     if (cd) {
       const k = dkey();
       cd.value = waterOf(k) >= waterGoal(k)
-        ? 'Meta de água concluída hoje! ✅'
+        ? 'Meta de água concluída hoje'
         : formatWaterCountdown((S.notifications.nextWaterRemindAt || (Date.now() + getWaterIntervalMs())) - Date.now());
     }
     checkPeriodicNotifications();
