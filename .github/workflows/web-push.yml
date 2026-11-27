@@ -1,4 +1,4 @@
-name: Web Push Notifications (Água, Alimentação e Treino)
+name: Web Push Notifications (Água, Alimentação e Treino - Supabase)
 
 on:
   # Roda automaticamente de hora em hora (entre 8h e 22h no horário de Brasília)
@@ -28,12 +28,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Instalar biblioteca web-push
-        run: npm install --no-save web-push
+      - name: Instalar dependências (@supabase/supabase-js e web-push)
+        run: npm install --no-save @supabase/supabase-js web-push
 
-      - name: Verificar Firestore e disparar Web Push (VAPID)
+      - name: Verificar Supabase e disparar Web Push (VAPID)
         env:
-          FIREBASE_PROJECT_ID: 'pulso-61be3'
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           VAPID_PUBLIC_KEY: 'BNsRjJvsT-9CCBTZSWEdQ6WgavTeJ8Efwz9vUt2F0Rqx0fPTNbfBsm5fVGmbooYKukQJmDot6jUmWoSkwp08lYw'
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           FORCE_TEST: ${{ github.event.inputs.force_test || 'false' }}

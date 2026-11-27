@@ -1,0 +1,14 @@
+{
+  "name": "pulso-app-de-treino",
+  "version": "2.0.0",
+  "description": "Pulso — App de Treino com Supabase (Auth, PostgreSQL + RLS, RBAC Admin/Trainer/User, Web Push e Catálogo IA)",
+  "private": true,
+  "scripts": {
+    "start": "npx serve .",
+    "send-push": "node scripts/send-push.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.2",
+    "web-push": "^3.6.7"
+  }
+}

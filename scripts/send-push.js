@@ -1,17 +1,31 @@
 'use strict';
 
 /**
- * Disparador de Web Push Notifications (GitHub Actions -> Celular do Usuário)
- * Lê os usuários inscritos no Firestore (pulso-61be3 / coleção usuarios_pulso),
+ * Disparador de Web Push Notifications (GitHub Actions -> Celular do Usuário via Supabase)
+ * Lê os usuários inscritos nas tabelas do Supabase (`profiles`, `hydration_logs`, `nutrition_logs`, `workout_sessions`),
  * verifica o Timer exato de Hidratação (nextWaterRemindAt / waterIntervalMin),
  * Alimentação e Cobrança de 24h de Treino e envia Web Push real criptografado
  * com chaves VAPID mesmo com o app/navegador fechado, atualizando o próximo
- * ciclo do timer no Firestore após o disparo.
+ * ciclo do timer na tabela `profiles` do Supabase.
  */
 
 const webpush = require('web-push');
+const { createClient } = require('@supabase/supabase-js');
 
-const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'pulso-61be3';
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  'https://fowevndykefesdozdxwd.supabase.co';
+
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  'sb_publishable_6eo4lSgqSXX2qaEt9tpT_g_ZunKz8x1';
+
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BNsRjJvsT-9CCBTZSWEdQ6WgavTeJ8Efwz9vUt2F0Rqx0fPTNbfBsm5fVGmbooYKukQJmDot6jUmWoSkwp08lYw';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:anthony172129@gmail.com';
@@ -24,43 +38,9 @@ if (!VAPID_PRIVATE_KEY) {
 
 webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
-// Converte um valor no formato REST do Firestore para objeto JavaScript normal
-function fromFirestoreValue(v) {
-  if (!v || typeof v !== 'object') return v;
-  if ('stringValue' in v) return v.stringValue;
-  if ('integerValue' in v) return Number(v.integerValue);
-  if ('doubleValue' in v) return Number(v.doubleValue);
-  if ('booleanValue' in v) return Boolean(v.booleanValue);
-  if ('nullValue' in v) return null;
-  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromFirestoreValue);
-  if ('mapValue' in v) {
-    const out = {};
-    const fields = v.mapValue.fields || {};
-    for (const k of Object.keys(fields)) out[k] = fromFirestoreValue(fields[k]);
-    return out;
-  }
-  return null;
-}
-
-// Converte objeto JS para formato REST do Firestore
-function toFirestoreValue(v) {
-  if (v === null || v === undefined) return { nullValue: null };
-  if (typeof v === 'boolean') return { booleanValue: v };
-  if (typeof v === 'number') {
-    if (Number.isInteger(v)) return { integerValue: String(v) };
-    return { doubleValue: v };
-  }
-  if (typeof v === 'string') return { stringValue: v };
-  if (Array.isArray(v)) return { arrayValue: { values: v.map(toFirestoreValue) } };
-  if (typeof v === 'object') {
-    const fields = {};
-    for (const k of Object.keys(v)) {
-      if (v[k] !== undefined) fields[k] = toFirestoreValue(v[k]);
-    }
-    return { mapValue: { fields } };
-  }
-  return { stringValue: String(v) };
-}
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false },
+});
 
 // Data/hora atual no fuso horário do Brasil (America/Sao_Paulo)
 function getBrazilNow() {
@@ -89,86 +69,61 @@ function calcKcalGoal(p) {
   return Math.max(p.sexo === 'f' ? 1200 : 1500, tdee + adj);
 }
 
-function calcWaterGoal(p, dayLog) {
+function calcWaterGoal(p, sessions) {
   const basal = Math.round(((p.peso || 75) * 35) / 50) * 50;
-  const sessions = dayLog?.sessions || [];
-  const sweat = sessions.reduce((acc, s) => {
+  const sweat = (sessions || []).reduce((acc, s) => {
     const min = Number(s.min) || 60;
     return acc + Math.max(200, Math.round(((p.peso || 75) * 0.12 * min) / 50) * 50);
   }, 0);
   return basal + sweat;
 }
 
-async function fetchUsersFromFirestore() {
-  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/usuarios_pulso?pageSize=100`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Falha ao consultar Firestore (${res.status}): ${await res.text()}`);
-  }
-  const data = await res.json();
-  return (data.documents || []).map(doc => {
-    const fields = doc.fields || {};
-    const parsed = { _docName: doc.name };
-    for (const k of Object.keys(fields)) parsed[k] = fromFirestoreValue(fields[k]);
-    return parsed;
-  });
-}
-
-async function updateUserNotificationsInFirestore(docName, state) {
-  if (!docName || !state) return;
-  const url = `https://firestore.googleapis.com/v1/${docName}?updateMask.fieldPaths=state.notifications&updateMask.fieldPaths=updatedAt`;
-  const body = {
-    fields: {
-      updatedAt: toFirestoreValue(Date.now()),
-      state: toFirestoreValue(state),
-    },
-  };
-  try {
-    await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    console.warn('⚠️ Falha ao atualizar timer no Firestore:', err.message);
-  }
-}
-
 async function run() {
   const br = getBrazilNow();
-  console.log(`🕒 Verificando timers e metas em ${br.dkey} às ${br.hour}:${String(br.minute).padStart(2, '0')} (Horário de Brasília)...`);
+  console.log(`🕒 Verificando timers e metas no Supabase em ${br.dkey} às ${br.hour}:${String(br.minute).padStart(2, '0')} (Horário de Brasília)...`);
 
-  const users = await fetchUsersFromFirestore();
-  console.log(`👥 Total de contas encontradas no Firestore: ${users.length}`);
+  const { data: profiles, error: profErr } = await supabase.from('profiles').select('*');
+  if (profErr) {
+    throw new Error(`Falha ao consultar tabela profiles no Supabase: ${profErr.message}`);
+  }
+
+  console.log(`👥 Total de perfis encontrados no Supabase: ${(profiles || []).length}`);
 
   let sentCount = 0;
 
-  for (const u of users) {
-    const state = u.state;
-    const notif = state?.notifications || {};
+  for (const p of profiles || []) {
+    const notif = p.notifications || {};
     const sub = notif.pushSubscription;
     if (!sub || !sub.endpoint) continue;
     if (notif.enabled === false) continue;
 
-    const nome = (state.profile?.nome || u.email || 'Atleta').split(' ')[0];
-    const dayLog = (state.log && state.log[br.dkey]) || { water: [], meals: [], sessions: [] };
-    const drankMl = (dayLog.water || []).reduce((acc, w) => acc + (Number(w.ml) || 0), 0);
-    const waterGoal = calcWaterGoal(state.profile || {}, dayLog);
-    const eatenKcal = (dayLog.meals || []).reduce((acc, m) => acc + (Number(m.kcal) || 0), 0);
-    const kcalGoal = calcKcalGoal(state.profile || {});
-    const trainedToday = (dayLog.sessions || []).length > 0;
-    const isTrainDay = (state.trainingDays || [1, 2, 3, 4, 5, 6]).includes(br.dayOfWeek);
+    const [waterRes, mealsRes, sessionsRes] = await Promise.all([
+      supabase.from('hydration_logs').select('ml').eq('user_id', p.id).eq('data', br.dkey),
+      supabase.from('nutrition_logs').select('kcal, tipo').eq('user_id', p.id).eq('data', br.dkey),
+      supabase.from('workout_sessions').select('min, kcal').eq('user_id', p.id).eq('data', br.dkey),
+    ]);
+
+    const waterRows = waterRes.data || [];
+    const mealRows = mealsRes.data || [];
+    const sessionRows = sessionsRes.data || [];
+
+    const nome = (p.nome || p.email || 'Atleta').split(' ')[0];
+    const drankMl = waterRows.reduce((acc, w) => acc + (Number(w.ml) || 0), 0);
+    const waterGoal = calcWaterGoal(p, sessionRows);
+    const eatenKcal = mealRows.reduce((acc, m) => acc + (Number(m.kcal) || 0), 0);
+    const kcalGoal = p.meta_calorias || calcKcalGoal(p);
+    const trainedToday = sessionRows.length > 0;
+    const isTrainDay = (p.training_days || [1, 2, 3, 4, 5, 6]).includes(br.dayOfWeek);
 
     const messagesToSend = [];
-    let stateModified = false;
+    let notifModified = false;
 
-    // Modo de disparo de teste manual pelo botão Run Workflow do GitHub Actions
     if (FORCE_TEST) {
       messagesToSend.push({
-        title: `🔔 Teste Web Push · Olá, ${nome}!`,
+        title: `🔔 Teste Web Push (Supabase) · Olá, ${nome}!`,
         body: `Suas notificações reais de Água (${drankMl}/${waterGoal} ml), Alimentação (${eatenKcal}/${kcalGoal} kcal) e Treino estão funcionando!`,
         tag: 'pulso-test',
-        url: './index.html#inicio',
+        url: './index.html#/app/inicio',
       });
     } else {
       // 1. Cobrança de Hidratação exatamente quando o timer de água fechar (mesmo com o app fechado)
@@ -177,7 +132,6 @@ async function run() {
       const lastRemindAt = Number(notif.lastWaterRemindAt) || 0;
       const nextDueAt = Number(notif.nextWaterRemindAt) || (lastRemindAt > 0 ? lastRemindAt + intervalMs : 0);
 
-      // Verifica se o timer de água já fechou (ou fecha dentro dos próximos 60 segundos)
       const waterTimerClosed = nextDueAt > 0 ? (br.timestamp + 60000 >= nextDueAt) : (br.timestamp - lastRemindAt >= intervalMs);
 
       if (drankMl < waterGoal && waterTimerClosed && (br.hour >= 7 && br.hour <= 23)) {
@@ -187,18 +141,18 @@ async function run() {
           title: `💧 O timer de água fechou, ${nome}!`,
           body: `Hora de beber água! Você registrou ${drankMl} ml de ${waterGoal} ml hoje (faltam ${falta} ml). Beba 250 ml agora!`,
           tag: 'pulso-water-timer',
-          url: './index.html#agua',
+          url: './index.html#/app/agua',
           dueAt: dueAtExact,
         });
         notif.lastWaterRemindAt = br.timestamp;
         notif.nextWaterRemindAt = br.timestamp + intervalMs;
-        stateModified = true;
+        notifModified = true;
       }
 
       // 2. Cobrança de 24h após o último treino
-      const lastW = Number(state.lastWorkoutAt) || 0;
+      const lastW = Number(p.last_workout_at) || 0;
       const hoursSinceWorkout = lastW ? (br.timestamp - lastW) / 3600000 : 0;
-      const justifiedToday = (state.missedReasons || []).some(r => r.data === br.dkey);
+      const justifiedToday = (p.missed_reasons || []).some(r => r.data === br.dkey);
       const lastMissedPushAt = Number(notif.lastMissedPromptAt) || 0;
 
       if (
@@ -215,26 +169,25 @@ async function run() {
           title: `⚠️ ${nome}, faz ${Math.floor(hoursSinceWorkout)}h desde o último treino!`,
           body: 'Por que você ainda não treinou hoje? Toque para abrir seu treino e preencher suas séries ou justificar.',
           tag: 'pulso-workout-24h',
-          url: './index.html#treinos',
+          url: './index.html#/app/treinos',
         });
         notif.lastMissedPromptAt = br.timestamp;
-        stateModified = true;
+        notifModified = true;
       }
 
       // 3. Cobrança de Alimentação (1x por faixa de horário de refeição)
-      const meals = dayLog.meals || [];
       let mealMsg = null;
       let mealSlot = null;
-      if (br.hour >= 8 && br.hour < 11 && meals.length === 0) {
+      if (br.hour >= 8 && br.hour < 11 && mealRows.length === 0) {
         mealMsg = 'Ainda não vimos seu Café da manhã hoje!';
         mealSlot = `${br.dkey}-cafe`;
-      } else if (br.hour >= 12 && br.hour < 15 && !meals.some(m => m.tipo === 'Almoço')) {
+      } else if (br.hour >= 12 && br.hour < 15 && !mealRows.some(m => m.tipo === 'Almoço')) {
         mealMsg = 'Hora do Almoço! Não esqueça de se alimentar e registrar as calorias.';
         mealSlot = `${br.dkey}-almoco`;
-      } else if (br.hour >= 16 && br.hour < 18 && meals.length < 2) {
+      } else if (br.hour >= 16 && br.hour < 18 && mealRows.length < 2) {
         mealMsg = 'Hora do Lanche da tarde! Registre o que você comeu.';
         mealSlot = `${br.dkey}-lanche`;
-      } else if (br.hour >= 19 && br.hour <= 22 && !meals.some(m => m.tipo === 'Jantar')) {
+      } else if (br.hour >= 19 && br.hour <= 22 && !mealRows.some(m => m.tipo === 'Jantar')) {
         mealMsg = 'Já jantou? Registre seu Jantar para fechar os pontos de alimentação do dia.';
         mealSlot = `${br.dkey}-jantar`;
       }
@@ -244,10 +197,10 @@ async function run() {
           title: `🍽️ Se alimente e registre, ${nome}!`,
           body: `${mealMsg} (${eatenKcal} de ${kcalGoal} kcal registradas hoje).`,
           tag: 'pulso-meal',
-          url: './index.html#calorias',
+          url: './index.html#/app/calorias',
         });
         notif.lastMealPushSlot = mealSlot;
-        stateModified = true;
+        notifModified = true;
       }
     }
 
@@ -255,14 +208,14 @@ async function run() {
       try {
         await webpush.sendNotification(sub, JSON.stringify(msg));
         sentCount++;
-        console.log(`✅ Push [${msg.tag}] enviado para ${u.email}`);
+        console.log(`✅ Push [${msg.tag}] enviado para ${p.email}`);
       } catch (err) {
-        console.warn(`⚠️ Falha ao enviar Push para ${u.email}:`, err.statusCode || err.message);
+        console.warn(`⚠️ Falha ao enviar Push para ${p.email}:`, err.statusCode || err.message);
       }
     }
 
-    if (stateModified) {
-      await updateUserNotificationsInFirestore(u._docName, state);
+    if (notifModified) {
+      await supabase.from('profiles').update({ notifications: notif }).eq('id', p.id);
     }
   }
 

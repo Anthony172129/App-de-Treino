@@ -508,6 +508,31 @@ td { padding: 10px; box-shadow: 0 -1px 0 var(--line); white-space: nowrap; }
   font-size: .74rem; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+.role-chip {
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.role-chip.admin {
+  background: hsl(42 92% 62% / .18);
+  color: var(--body);
+  box-shadow: inset 0 0 0 1px hsl(42 92% 62% / .35);
+}
+.role-chip.trainer {
+  background: hsl(196 88% 60% / .18);
+  color: var(--water);
+  box-shadow: inset 0 0 0 1px hsl(196 88% 60% / .35);
+}
+.role-chip.user {
+  background: hsl(78 82% 58% / .16);
+  color: var(--lime);
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
   .app { grid-template-columns: minmax(0, 1fr); }
