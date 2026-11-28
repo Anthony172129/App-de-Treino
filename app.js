@@ -1871,8 +1871,7 @@ function render(animate = false) {
       <div>Administrador <b style="color:var(--text)">${esc(S.profile.nome || firstName)}</b></div>
       <div class="nav-user-email">${esc(currentUserEmail)}</div>
       <div style="display:flex;gap:6px;margin-top:4px">
-        <button class="btn ghost small" data-action="open-cloud-dialog" style="flex:1;padding:6px 8px;font-size:.75rem">${ICON.db}<span>Supabase</span></button>
-        <button class="btn danger small" data-action="logout" style="padding:6px 10px;font-size:.75rem">Sair</button>
+        <button class="btn danger small" data-action="logout" style="width:100%;padding:6px 10px;font-size:.75rem">Sair</button>
       </div>`;
 
     $$('.admin-nav-link').forEach(a => a.classList.toggle('active', a.dataset.adminRoute === adminRoute));
@@ -1913,8 +1912,7 @@ function render(animate = false) {
     <div>Conectado como <b style="color:var(--text)">${esc(S.profile.nome || firstName)}</b></div>
     <div class="nav-user-email">${esc(currentUserEmail)}</div>
     <div style="display:flex;gap:6px;margin-top:4px">
-      <button class="btn ghost small" data-action="open-cloud-dialog" style="flex:1;padding:6px 8px;font-size:.75rem">${ICON.db}<span>Supabase</span></button>
-      <button class="btn danger small" data-action="logout" style="padding:6px 10px;font-size:.75rem">Sair</button>
+      <button class="btn danger small" data-action="logout" style="width:100%;padding:6px 10px;font-size:.75rem">Sair</button>
     </div>`;
 
   renderAlertBanners();
